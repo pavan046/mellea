@@ -555,6 +555,21 @@ class LocalHFBackend(FormatterBackend, AdapterMixin):
         for model_option in model_options:
             if model_option == ModelOption.TEMPERATURE:
                 request_json["temperature"] = model_options[model_option]
+            elif model_option == ModelOption.TOOLS:
+                # The granite ChatCompletion schema expects tools in flat
+                # format {name, description, parameters}, not the nested
+                # OpenAI format {type: "function", function: {...}}.
+                tools_flat = []
+                for t in model_options[model_option]:
+                    func = t.as_json_tool.get("function", t.as_json_tool)
+                    tools_flat.append(
+                        {
+                            "name": func.get("name", t.name),
+                            "description": func.get("description"),
+                            "parameters": func.get("parameters"),
+                        }
+                    )
+                request_json["tools"] = tools_flat
 
         rewritten = rewriter.transform(request_json, **action.intrinsic_kwargs)
 

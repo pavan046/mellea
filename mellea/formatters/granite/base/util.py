@@ -171,6 +171,9 @@ def chat_completion_request_to_transformers_inputs(
     ):
         tokenizer_input["documents"] = request["extra_body"]["documents"]
 
+    if request.get("tools") is not None:
+        tokenizer_input["tools"] = request["tools"]
+
     input_tokens = tokenizer.apply_chat_template(**tokenizer_input, return_tensors="pt")  # type: ignore[union-attr]
 
     # Transformers 5 switched the return type of apply_chat_template() from Tensor to

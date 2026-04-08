@@ -55,6 +55,22 @@ Specialized model capabilities through adapters.
 - Citation validation
 - Context relevance assessment
 
+**[rag_patterns/](rag_patterns/)**
+Five progressive RAG patterns composing retrieval, intrinsics, and IVR.
+- Rewrite-Retrieve-Generate (basic RAG with query rewriting)
+- Answerability-gated generation (quality gate)
+- Query clarification with branching
+- Hallucination mitigation via IVR loop (key pattern)
+- Citation and grounding enrichment
+
+**[fc_patterns/](fc_patterns/)**
+Five progressive function-calling patterns with modular LoRA routing.
+- Route-and-Execute (basic modular routing)
+- Tool shortlisting (catalog filtering)
+- Confidence-gated routing (fallback to monolithic)
+- Reflect-and-Retry (IVR analogy — key pattern)
+- Direct baseline (monolithic comparison)
+
 **[sofai/](sofai/)**
 Two-tier sampling with fast and slow models.
 - Cost optimization
@@ -104,6 +120,10 @@ Tool calling and code execution.
 - Custom tool definition
 - Tool argument validation
 - Safe code execution
+
+**[fc_patterns/](fc_patterns/)**
+Modular function-calling patterns with LoRA routing.
+- See [fc_patterns/README.md](fc_patterns/README.md) for details
 
 ### Safety & Validation
 
@@ -192,6 +212,7 @@ Utility functions used across examples.
 - [information_extraction/](information_extraction/) - Entity extraction
 - [mobject/](mobject/) - Table operations
 - [rag/](rag/) - Document retrieval
+- [rag_patterns/](rag_patterns/) - Intrinsic-powered RAG patterns
 
 ### Agent Systems
 - [agents/](agents/) - ReACT agents

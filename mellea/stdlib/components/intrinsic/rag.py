@@ -37,7 +37,10 @@ def check_answerability(
         context.add(Message("user", question, documents=list(documents))),
         backend,
     )
-    return result_json["answerability_likelihood"]
+    try:
+        return result_json["answerability_likelihood"]
+    except TypeError:
+        return result_json
 
 
 def rewrite_question(
