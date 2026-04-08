@@ -25,10 +25,8 @@ Run
 
 from __future__ import annotations
 
-import json
-
 import mellea.stdlib.functional as mfuncs
-from mellea.backends import ModelOption
+from mellea.backends import ModelOption, tool
 from mellea.backends.adapters.adapter import Adapter, IntrinsicAdapter
 from mellea.backends.adapters.catalog import (
     _INTRINSICS_CATALOG,
@@ -37,6 +35,7 @@ from mellea.backends.adapters.catalog import (
     IntriniscsCatalogEntry,
 )
 from mellea.backends.huggingface import LocalHFBackend
+from mellea.backends.tools import MelleaTool
 from mellea.stdlib.components import Message
 from mellea.stdlib.components.intrinsic import Intrinsic
 from mellea.stdlib.context import ChatContext
@@ -127,46 +126,55 @@ def _ensure_adapter(name: str, path: str, config: dict, backend: LocalHFBackend)
 
 
 # ---------------------------------------------------------------------------
-# Example tools (same as 101 for comparison)
+# Example tools (same as 101 for comparison) — defined with @tool decorator
 # ---------------------------------------------------------------------------
 
-EXAMPLE_TOOLS = [
-    {
-        "name": "get_weather",
-        "description": "Get current weather.",
-        "parameters": {
-            "type": "object",
-            "properties": {"location": {"type": "string"}},
-            "required": ["location"],
-        },
-    },
-    {
-        "name": "book_hotel",
-        "description": "Book a hotel room.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "city": {"type": "string"},
-                "check_in": {"type": "string"},
-                "check_out": {"type": "string"},
-            },
-            "required": ["city", "check_in", "check_out"],
-        },
-    },
-    {
-        "name": "search_flights",
-        "description": "Search for flights.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "origin": {"type": "string"},
-                "destination": {"type": "string"},
-                "date": {"type": "string"},
-            },
-            "required": ["origin", "destination", "date"],
-        },
-    },
-]
+
+@tool
+def get_weather(location: str) -> dict:
+    """Get current weather.
+
+    Args:
+        location: City name.
+    """
+    return {"location": location, "weather": "sunny", "temp_f": 72}
+
+
+@tool
+def book_hotel(city: str, check_in: str, check_out: str) -> dict:
+    """Book a hotel room.
+
+    Args:
+        city: City to book in.
+        check_in: Check-in date (YYYY-MM-DD).
+        check_out: Check-out date (YYYY-MM-DD).
+    """
+    return {
+        "city": city,
+        "check_in": check_in,
+        "check_out": check_out,
+        "status": "booked",
+    }
+
+
+@tool
+def search_flights(origin: str, destination: str, date: str) -> dict:
+    """Search for flights.
+
+    Args:
+        origin: Departure city.
+        destination: Arrival city.
+        date: Date (YYYY-MM-DD).
+    """
+    return {
+        "origin": origin,
+        "destination": destination,
+        "date": date,
+        "flights": ["FL100"],
+    }
+
+
+EXAMPLE_TOOLS: list[MelleaTool] = [get_weather, book_hotel, search_flights]
 
 
 # ---------------------------------------------------------------------------
@@ -174,19 +182,13 @@ EXAMPLE_TOOLS = [
 # ---------------------------------------------------------------------------
 
 
-def run(question: str, tools: list[dict]) -> None:
+def run(question: str, tools: list[MelleaTool]) -> None:
     context = ChatContext()
     print("Loading model...")
     backend = LocalHFBackend(model_id=BASE_MODEL)
 
     _ensure_adapter(
         "fc_baseline", ADAPTER_PATHS["fc_baseline"], BASELINE_CONFIG, backend
-    )
-
-    tool_schemas = "\n".join(
-        f"- {t['name']}: {t.get('description', '')}  "
-        f"Parameters: {json.dumps(t.get('parameters', {}))}"
-        for t in tools
     )
 
     exec_ctx = context.add(
@@ -196,7 +198,7 @@ def run(question: str, tools: list[dict]) -> None:
             'containing a "tool_calls" array. If no tools are needed, respond '
             'with {"tool_calls": []}. No explanation, only JSON.',
         )
-    ).add(Message("user", f"Available tools:\n{tool_schemas}\n\nRequest: {question}"))
+    ).add(Message("user", question))
 
     print(f"\n[1] Direct execution (no routing): {question}")
 
@@ -204,7 +206,7 @@ def run(question: str, tools: list[dict]) -> None:
         Intrinsic("fc_baseline"),
         exec_ctx,
         backend,
-        model_options={ModelOption.TEMPERATURE: 0.0},
+        model_options={ModelOption.TEMPERATURE: 0.0, ModelOption.TOOLS: tools},
         strategy=None,
     )
     assert mot.is_computed()

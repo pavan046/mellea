@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 
 import mellea.stdlib.functional as mfuncs
-from mellea.backends import ModelOption
+from mellea.backends import ModelOption, tool
 from mellea.backends.adapters.adapter import Adapter, IntrinsicAdapter
 from mellea.backends.adapters.catalog import (
     _INTRINSICS_CATALOG,
@@ -40,6 +40,7 @@ from mellea.backends.adapters.catalog import (
     IntriniscsCatalogEntry,
 )
 from mellea.backends.huggingface import LocalHFBackend
+from mellea.backends.tools import MelleaTool
 from mellea.stdlib.components import Message
 from mellea.stdlib.components.intrinsic import Intrinsic
 from mellea.stdlib.context import ChatContext
@@ -186,23 +187,23 @@ def _ensure_adapter(name: str, path: str, config: dict, backend: LocalHFBackend)
 
 
 def route_query(
-    question: str, tools: list[dict], context: ChatContext, backend: LocalHFBackend
+    question: str,
+    tools: list[MelleaTool],
+    context: ChatContext,
+    backend: LocalHFBackend,
 ) -> dict:
     """Classify a query as parallel, multi_step, or conversational."""
     _ensure_adapter("fc_router", ADAPTER_PATHS["fc_router"], ROUTER_CONFIG, backend)
 
-    tools_str = "\n".join(json.dumps(t) for t in tools)
-    router_ctx = (
-        context.add(Message("system", ROUTER_SYSTEM_MESSAGE))
-        .add(Message("user", f"Available tools:\n{tools_str}"))
-        .add(Message("user", question))
+    router_ctx = context.add(Message("system", ROUTER_SYSTEM_MESSAGE)).add(
+        Message("user", question)
     )
 
     mot, _ = mfuncs.act(
         Intrinsic("fc_router"),
         router_ctx,
         backend,
-        model_options={ModelOption.TEMPERATURE: 0.0},
+        model_options={ModelOption.TEMPERATURE: 0.0, ModelOption.TOOLS: tools},
         strategy=None,
     )
     assert mot.is_computed()
@@ -219,7 +220,7 @@ def route_query(
 
 def execute_tool_call(
     question: str,
-    tools: list[dict],
+    tools: list[MelleaTool],
     category: str,
     context: ChatContext,
     backend: LocalHFBackend,
@@ -234,11 +235,6 @@ def execute_tool_call(
         raise ValueError(f"Unknown category: {category}")
 
     name, path = adapter_map[category]
-    tool_schemas = "\n".join(
-        f"- {t['name']}: {t.get('description', '')}  "
-        f"Parameters: {json.dumps(t.get('parameters', {}))}"
-        for t in tools
-    )
 
     if category == "conversational":
         from mellea.stdlib.session import MelleaSession
@@ -256,13 +252,13 @@ def execute_tool_call(
             'object containing a "tool_calls" array. Each element must have '
             '"name" and "arguments" fields. No explanation, only JSON.',
         )
-    ).add(Message("user", f"Available tools:\n{tool_schemas}\n\nRequest: {question}"))
+    ).add(Message("user", question))
 
     mot, _ = mfuncs.act(
         Intrinsic(name),
         exec_ctx,
         backend,
-        model_options={ModelOption.TEMPERATURE: 0.0},
+        model_options={ModelOption.TEMPERATURE: 0.0, ModelOption.TOOLS: tools},
         strategy=None,
     )
     assert mot.is_computed()
@@ -270,53 +266,62 @@ def execute_tool_call(
 
 
 # ---------------------------------------------------------------------------
-# Example tools
+# Example tools — defined with Mellea's @tool decorator
 # ---------------------------------------------------------------------------
 
-EXAMPLE_TOOLS = [
-    {
-        "name": "get_weather",
-        "description": "Get current weather for a location.",
-        "parameters": {
-            "type": "object",
-            "properties": {"location": {"type": "string", "description": "City name"}},
-            "required": ["location"],
-        },
-    },
-    {
-        "name": "book_hotel",
-        "description": "Book a hotel room.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "city": {"type": "string"},
-                "check_in": {"type": "string", "description": "YYYY-MM-DD"},
-                "check_out": {"type": "string", "description": "YYYY-MM-DD"},
-            },
-            "required": ["city", "check_in", "check_out"],
-        },
-    },
-    {
-        "name": "search_flights",
-        "description": "Search for flights between two cities.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "origin": {"type": "string"},
-                "destination": {"type": "string"},
-                "date": {"type": "string", "description": "YYYY-MM-DD"},
-            },
-            "required": ["origin", "destination", "date"],
-        },
-    },
-]
+
+@tool
+def get_weather(location: str) -> dict:
+    """Get current weather for a location.
+
+    Args:
+        location: City name, e.g. 'San Francisco'.
+    """
+    return {"location": location, "weather": "sunny", "temp_f": 72}
+
+
+@tool
+def book_hotel(city: str, check_in: str, check_out: str) -> dict:
+    """Book a hotel room.
+
+    Args:
+        city: City to book in.
+        check_in: Check-in date (YYYY-MM-DD).
+        check_out: Check-out date (YYYY-MM-DD).
+    """
+    return {
+        "city": city,
+        "check_in": check_in,
+        "check_out": check_out,
+        "status": "booked",
+    }
+
+
+@tool
+def search_flights(origin: str, destination: str, date: str) -> dict:
+    """Search for flights between two cities.
+
+    Args:
+        origin: Departure city.
+        destination: Arrival city.
+        date: Date (YYYY-MM-DD).
+    """
+    return {
+        "origin": origin,
+        "destination": destination,
+        "date": date,
+        "flights": ["FL100", "FL200"],
+    }
+
+
+EXAMPLE_TOOLS: list[MelleaTool] = [get_weather, book_hotel, search_flights]
 
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
 
-def run(question: str, tools: list[dict]) -> None:
+def run(question: str, tools: list[MelleaTool]) -> None:
     context = ChatContext()
     print("Loading model...")
     backend = LocalHFBackend(model_id=BASE_MODEL)

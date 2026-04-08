@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 
 import mellea.stdlib.functional as mfuncs
-from mellea.backends import ModelOption
+from mellea.backends import ModelOption, tool
 from mellea.backends.adapters.adapter import Adapter, IntrinsicAdapter
 from mellea.backends.adapters.catalog import (
     _INTRINSICS_CATALOG,
@@ -39,6 +39,7 @@ from mellea.backends.adapters.catalog import (
     IntriniscsCatalogEntry,
 )
 from mellea.backends.huggingface import LocalHFBackend
+from mellea.backends.tools import MelleaTool
 from mellea.stdlib.components import Message
 from mellea.stdlib.components.intrinsic import Intrinsic
 from mellea.stdlib.context import ChatContext
@@ -199,29 +200,29 @@ def _ensure_adapter(name: str, path: str, config: dict, backend: LocalHFBackend)
 
 
 def shortlist_tools(
-    question: str, tools: list[dict], context: ChatContext, backend: LocalHFBackend
-) -> list[dict]:
+    question: str,
+    tools: list[MelleaTool],
+    context: ChatContext,
+    backend: LocalHFBackend,
+) -> list[MelleaTool]:
     """Filter a large tool catalog down to relevant tools.
 
     Returns:
-        Filtered list of tool dicts (subset of input tools).
+        Filtered list of MelleaTools (subset of input tools).
     """
     _ensure_adapter(
         "fc_shortlister", ADAPTER_PATHS["fc_shortlister"], SHORTLISTER_CONFIG, backend
     )
 
-    tools_str = "\n".join(f"- {t['name']}: {t.get('description', '')}" for t in tools)
-    shortlist_ctx = (
-        context.add(Message("system", SHORTLISTER_SYSTEM_MESSAGE))
-        .add(Message("user", f"Available tools:\n{tools_str}"))
-        .add(Message("user", question))
+    shortlist_ctx = context.add(Message("system", SHORTLISTER_SYSTEM_MESSAGE)).add(
+        Message("user", question)
     )
 
     mot, _ = mfuncs.act(
         Intrinsic("fc_shortlister"),
         shortlist_ctx,
         backend,
-        model_options={ModelOption.TEMPERATURE: 0.0},
+        model_options={ModelOption.TEMPERATURE: 0.0, ModelOption.TOOLS: tools},
         strategy=None,
     )
     assert mot.is_computed()
@@ -233,27 +234,27 @@ def shortlist_tools(
     except json.JSONDecodeError:
         return tools  # fallback: return all tools
 
-    return [t for t in tools if t["name"] in relevant_names]
+    return [t for t in tools if t.name in relevant_names]
 
 
 def route_query(
-    question: str, tools: list[dict], context: ChatContext, backend: LocalHFBackend
+    question: str,
+    tools: list[MelleaTool],
+    context: ChatContext,
+    backend: LocalHFBackend,
 ) -> dict:
     """Classify a query as parallel, multi_step, or conversational."""
     _ensure_adapter("fc_router", ADAPTER_PATHS["fc_router"], ROUTER_CONFIG, backend)
 
-    tools_str = "\n".join(json.dumps(t) for t in tools)
-    router_ctx = (
-        context.add(Message("system", ROUTER_SYSTEM_MESSAGE))
-        .add(Message("user", f"Available tools:\n{tools_str}"))
-        .add(Message("user", question))
+    router_ctx = context.add(Message("system", ROUTER_SYSTEM_MESSAGE)).add(
+        Message("user", question)
     )
 
     mot, _ = mfuncs.act(
         Intrinsic("fc_router"),
         router_ctx,
         backend,
-        model_options={ModelOption.TEMPERATURE: 0.0},
+        model_options={ModelOption.TEMPERATURE: 0.0, ModelOption.TOOLS: tools},
         strategy=None,
     )
     assert mot.is_computed()
@@ -270,7 +271,7 @@ def route_query(
 
 def execute_tool_call(
     question: str,
-    tools: list[dict],
+    tools: list[MelleaTool],
     category: str,
     context: ChatContext,
     backend: LocalHFBackend,
@@ -285,11 +286,6 @@ def execute_tool_call(
         raise ValueError(f"Unknown category: {category}")
 
     name, path = adapter_map[category]
-    tool_schemas = "\n".join(
-        f"- {t['name']}: {t.get('description', '')}  "
-        f"Parameters: {json.dumps(t.get('parameters', {}))}"
-        for t in tools
-    )
 
     if category == "conversational":
         from mellea.stdlib.session import MelleaSession
@@ -306,13 +302,13 @@ def execute_tool_call(
             "You are a function-calling assistant. Respond ONLY with a JSON "
             'object containing a "tool_calls" array. No explanation, only JSON.',
         )
-    ).add(Message("user", f"Available tools:\n{tool_schemas}\n\nRequest: {question}"))
+    ).add(Message("user", question))
 
     mot, _ = mfuncs.act(
         Intrinsic(name),
         exec_ctx,
         backend,
-        model_options={ModelOption.TEMPERATURE: 0.0},
+        model_options={ModelOption.TEMPERATURE: 0.0, ModelOption.TOOLS: tools},
         strategy=None,
     )
     assert mot.is_computed()
@@ -323,175 +319,210 @@ def execute_tool_call(
 # Large tool catalog (15 tools — shortlisting is valuable here)
 # ---------------------------------------------------------------------------
 
-LARGE_TOOL_CATALOG = [
-    {
-        "name": "get_weather",
-        "description": "Get current weather for a location.",
-        "parameters": {
-            "type": "object",
-            "properties": {"location": {"type": "string"}},
-            "required": ["location"],
-        },
-    },
-    {
-        "name": "book_hotel",
-        "description": "Book a hotel room.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "city": {"type": "string"},
-                "check_in": {"type": "string"},
-                "check_out": {"type": "string"},
-            },
-            "required": ["city", "check_in", "check_out"],
-        },
-    },
-    {
-        "name": "search_flights",
-        "description": "Search for flights.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "origin": {"type": "string"},
-                "destination": {"type": "string"},
-                "date": {"type": "string"},
-            },
-            "required": ["origin", "destination", "date"],
-        },
-    },
-    {
-        "name": "calculate_mortgage",
-        "description": "Calculate mortgage payments.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "principal": {"type": "number"},
-                "rate": {"type": "number"},
-                "years": {"type": "integer"},
-            },
-            "required": ["principal", "rate", "years"],
-        },
-    },
-    {
-        "name": "translate_text",
-        "description": "Translate text between languages.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string"},
-                "target_lang": {"type": "string"},
-            },
-            "required": ["text", "target_lang"],
-        },
-    },
-    {
-        "name": "send_email",
-        "description": "Send an email.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "to": {"type": "string"},
-                "subject": {"type": "string"},
-                "body": {"type": "string"},
-            },
-            "required": ["to", "subject", "body"],
-        },
-    },
-    {
-        "name": "create_calendar_event",
-        "description": "Create a calendar event.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "date": {"type": "string"},
-                "time": {"type": "string"},
-            },
-            "required": ["title", "date", "time"],
-        },
-    },
-    {
-        "name": "search_restaurants",
-        "description": "Search for restaurants.",
-        "parameters": {
-            "type": "object",
-            "properties": {"city": {"type": "string"}, "cuisine": {"type": "string"}},
-            "required": ["city"],
-        },
-    },
-    {
-        "name": "get_stock_price",
-        "description": "Get current stock price.",
-        "parameters": {
-            "type": "object",
-            "properties": {"symbol": {"type": "string"}},
-            "required": ["symbol"],
-        },
-    },
-    {
-        "name": "convert_currency",
-        "description": "Convert between currencies.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "amount": {"type": "number"},
-                "from_currency": {"type": "string"},
-                "to_currency": {"type": "string"},
-            },
-            "required": ["amount", "from_currency", "to_currency"],
-        },
-    },
-    {
-        "name": "set_reminder",
-        "description": "Set a reminder.",
-        "parameters": {
-            "type": "object",
-            "properties": {"message": {"type": "string"}, "time": {"type": "string"}},
-            "required": ["message", "time"],
-        },
-    },
-    {
-        "name": "get_news",
-        "description": "Get latest news headlines.",
-        "parameters": {
-            "type": "object",
-            "properties": {"topic": {"type": "string"}},
-            "required": ["topic"],
-        },
-    },
-    {
-        "name": "play_music",
-        "description": "Play music.",
-        "parameters": {
-            "type": "object",
-            "properties": {"song": {"type": "string"}, "artist": {"type": "string"}},
-            "required": ["song"],
-        },
-    },
-    {
-        "name": "order_food",
-        "description": "Order food delivery.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "restaurant": {"type": "string"},
-                "items": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["restaurant", "items"],
-        },
-    },
-    {
-        "name": "get_directions",
-        "description": "Get driving directions.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "origin": {"type": "string"},
-                "destination": {"type": "string"},
-            },
-            "required": ["origin", "destination"],
-        },
-    },
+
+@tool
+def get_weather(location: str) -> dict:
+    """Get current weather for a location.
+
+    Args:
+        location: City name.
+    """
+    return {"location": location, "weather": "sunny", "temp_f": 72}
+
+
+@tool
+def book_hotel(city: str, check_in: str, check_out: str) -> dict:
+    """Book a hotel room.
+
+    Args:
+        city: City to book in.
+        check_in: Check-in date (YYYY-MM-DD).
+        check_out: Check-out date (YYYY-MM-DD).
+    """
+    return {
+        "city": city,
+        "check_in": check_in,
+        "check_out": check_out,
+        "status": "booked",
+    }
+
+
+@tool
+def search_flights(origin: str, destination: str, date: str) -> dict:
+    """Search for flights.
+
+    Args:
+        origin: Departure city.
+        destination: Arrival city.
+        date: Date (YYYY-MM-DD).
+    """
+    return {
+        "origin": origin,
+        "destination": destination,
+        "date": date,
+        "flights": ["FL100"],
+    }
+
+
+@tool
+def calculate_mortgage(principal: float, rate: float, years: int) -> dict:
+    """Calculate mortgage payments.
+
+    Args:
+        principal: Loan amount in dollars.
+        rate: Annual interest rate as a decimal.
+        years: Loan term in years.
+    """
+    monthly = principal * rate / 12 / (1 - (1 + rate / 12) ** (-years * 12))
+    return {"monthly_payment": round(monthly, 2)}
+
+
+@tool
+def translate_text(text: str, target_lang: str) -> dict:
+    """Translate text between languages.
+
+    Args:
+        text: Text to translate.
+        target_lang: Target language code, e.g. 'es', 'fr'.
+    """
+    return {"translated": text, "target_lang": target_lang}
+
+
+@tool
+def send_email(to: str, subject: str, body: str) -> dict:
+    """Send an email.
+
+    Args:
+        to: Recipient email address.
+        subject: Email subject line.
+        body: Email body text.
+    """
+    return {"to": to, "subject": subject, "status": "sent"}
+
+
+@tool
+def create_calendar_event(title: str, date: str, time: str) -> dict:
+    """Create a calendar event.
+
+    Args:
+        title: Event title.
+        date: Event date (YYYY-MM-DD).
+        time: Event time (HH:MM).
+    """
+    return {"title": title, "date": date, "time": time, "status": "created"}
+
+
+@tool
+def search_restaurants(city: str, cuisine: str = "") -> dict:
+    """Search for restaurants.
+
+    Args:
+        city: City to search in.
+        cuisine: Optional cuisine type, e.g. 'Italian'.
+    """
+    return {
+        "city": city,
+        "cuisine": cuisine,
+        "results": ["Restaurant A", "Restaurant B"],
+    }
+
+
+@tool
+def get_stock_price(symbol: str) -> dict:
+    """Get current stock price.
+
+    Args:
+        symbol: Stock ticker symbol, e.g. 'AAPL'.
+    """
+    return {"symbol": symbol, "price": 150.0}
+
+
+@tool
+def convert_currency(amount: float, from_currency: str, to_currency: str) -> dict:
+    """Convert between currencies.
+
+    Args:
+        amount: Amount to convert.
+        from_currency: Source currency code, e.g. 'USD'.
+        to_currency: Target currency code, e.g. 'EUR'.
+    """
+    return {
+        "amount": amount,
+        "from_currency": from_currency,
+        "to_currency": to_currency,
+    }
+
+
+@tool
+def set_reminder(message: str, time: str) -> dict:
+    """Set a reminder.
+
+    Args:
+        message: Reminder message text.
+        time: Reminder time (HH:MM or ISO datetime).
+    """
+    return {"message": message, "time": time, "status": "set"}
+
+
+@tool
+def get_news(topic: str) -> dict:
+    """Get latest news headlines.
+
+    Args:
+        topic: News topic or keyword.
+    """
+    return {"topic": topic, "headlines": ["Headline 1", "Headline 2"]}
+
+
+@tool
+def play_music(song: str, artist: str = "") -> dict:
+    """Play music.
+
+    Args:
+        song: Song title.
+        artist: Optional artist name.
+    """
+    return {"song": song, "artist": artist, "status": "playing"}
+
+
+@tool
+def order_food(restaurant: str, items: list) -> dict:
+    """Order food delivery.
+
+    Args:
+        restaurant: Restaurant name.
+        items: List of item names to order.
+    """
+    return {"restaurant": restaurant, "items": items, "status": "ordered"}
+
+
+@tool
+def get_directions(origin: str, destination: str) -> dict:
+    """Get driving directions.
+
+    Args:
+        origin: Starting location.
+        destination: Ending location.
+    """
+    return {"origin": origin, "destination": destination, "duration": "30 min"}
+
+
+LARGE_TOOL_CATALOG: list[MelleaTool] = [
+    get_weather,
+    book_hotel,
+    search_flights,
+    calculate_mortgage,
+    translate_text,
+    send_email,
+    create_calendar_event,
+    search_restaurants,
+    get_stock_price,
+    convert_currency,
+    set_reminder,
+    get_news,
+    play_music,
+    order_food,
+    get_directions,
 ]
 
 
@@ -500,7 +531,7 @@ LARGE_TOOL_CATALOG = [
 # ---------------------------------------------------------------------------
 
 
-def run(question: str, tools: list[dict]) -> None:
+def run(question: str, tools: list[MelleaTool]) -> None:
     context = ChatContext()
     print("Loading model...")
     backend = LocalHFBackend(model_id=BASE_MODEL)
@@ -508,7 +539,7 @@ def run(question: str, tools: list[dict]) -> None:
     # Step 1 — Shortlist
     print(f"\n[1] Shortlisting from {len(tools)} tools...")
     filtered = shortlist_tools(question, tools, context, backend)
-    filtered_names = [t["name"] for t in filtered]
+    filtered_names = [t.name for t in filtered]
     print(f"    Kept {len(filtered)}/{len(tools)}: {filtered_names}")
 
     # Step 2 — Route (with filtered tools)

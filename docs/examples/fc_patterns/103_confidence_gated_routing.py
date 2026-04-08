@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 
 import mellea.stdlib.functional as mfuncs
-from mellea.backends import ModelOption
+from mellea.backends import ModelOption, tool
 from mellea.backends.adapters.adapter import Adapter, IntrinsicAdapter
 from mellea.backends.adapters.catalog import (
     _INTRINSICS_CATALOG,
@@ -41,6 +41,7 @@ from mellea.backends.adapters.catalog import (
     IntriniscsCatalogEntry,
 )
 from mellea.backends.huggingface import LocalHFBackend
+from mellea.backends.tools import MelleaTool
 from mellea.stdlib.components import Message
 from mellea.stdlib.components.intrinsic import Intrinsic
 from mellea.stdlib.context import ChatContext
@@ -180,7 +181,10 @@ def _ensure_adapter(name: str, path: str, config: dict, backend: LocalHFBackend)
 
 
 def route_query_with_confidence(
-    question: str, tools: list[dict], context: ChatContext, backend: LocalHFBackend
+    question: str,
+    tools: list[MelleaTool],
+    context: ChatContext,
+    backend: LocalHFBackend,
 ) -> dict:
     """Classify a query and return a confidence score.
 
@@ -191,18 +195,15 @@ def route_query_with_confidence(
         "fc_router", ADAPTER_PATHS["fc_router"], ROUTER_CONFIG_WITH_CONFIDENCE, backend
     )
 
-    tools_str = "\n".join(json.dumps(t) for t in tools)
-    router_ctx = (
-        context.add(Message("system", ROUTER_SYSTEM_MESSAGE))
-        .add(Message("user", f"Available tools:\n{tools_str}"))
-        .add(Message("user", question))
+    router_ctx = context.add(Message("system", ROUTER_SYSTEM_MESSAGE)).add(
+        Message("user", question)
     )
 
     mot, _ = mfuncs.act(
         Intrinsic("fc_router"),
         router_ctx,
         backend,
-        model_options={ModelOption.TEMPERATURE: 0.0},
+        model_options={ModelOption.TEMPERATURE: 0.0, ModelOption.TOOLS: tools},
         strategy=None,
     )
     assert mot.is_computed()
@@ -225,19 +226,13 @@ def route_query_with_confidence(
 
 def execute_with_adapter(
     question: str,
-    tools: list[dict],
+    tools: list[MelleaTool],
     adapter_name: str,
     adapter_path: str,
     context: ChatContext,
     backend: LocalHFBackend,
 ) -> str:
     """Execute with a specific named adapter."""
-    tool_schemas = "\n".join(
-        f"- {t['name']}: {t.get('description', '')}  "
-        f"Parameters: {json.dumps(t.get('parameters', {}))}"
-        for t in tools
-    )
-
     tc_config: dict = EXECUTOR_CONFIG.copy()
     tc_config["response_format"] = TOOL_CALL_RESPONSE_FORMAT
     _ensure_adapter(adapter_name, adapter_path, tc_config, backend)
@@ -248,13 +243,13 @@ def execute_with_adapter(
             "You are a function-calling assistant. Respond ONLY with JSON "
             'containing a "tool_calls" array. No explanation, only JSON.',
         )
-    ).add(Message("user", f"Available tools:\n{tool_schemas}\n\nRequest: {question}"))
+    ).add(Message("user", question))
 
     mot, _ = mfuncs.act(
         Intrinsic(adapter_name),
         exec_ctx,
         backend,
-        model_options={ModelOption.TEMPERATURE: 0.0},
+        model_options={ModelOption.TEMPERATURE: 0.0, ModelOption.TOOLS: tools},
         strategy=None,
     )
     assert mot.is_computed()
@@ -262,46 +257,55 @@ def execute_with_adapter(
 
 
 # ---------------------------------------------------------------------------
-# Example tools
+# Example tools — defined with Mellea's @tool decorator
 # ---------------------------------------------------------------------------
 
-EXAMPLE_TOOLS = [
-    {
-        "name": "get_weather",
-        "description": "Get current weather.",
-        "parameters": {
-            "type": "object",
-            "properties": {"location": {"type": "string"}},
-            "required": ["location"],
-        },
-    },
-    {
-        "name": "book_hotel",
-        "description": "Book a hotel room.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "city": {"type": "string"},
-                "check_in": {"type": "string"},
-                "check_out": {"type": "string"},
-            },
-            "required": ["city", "check_in", "check_out"],
-        },
-    },
-    {
-        "name": "search_flights",
-        "description": "Search for flights.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "origin": {"type": "string"},
-                "destination": {"type": "string"},
-                "date": {"type": "string"},
-            },
-            "required": ["origin", "destination", "date"],
-        },
-    },
-]
+
+@tool
+def get_weather(location: str) -> dict:
+    """Get current weather.
+
+    Args:
+        location: City name.
+    """
+    return {"location": location, "weather": "sunny", "temp_f": 72}
+
+
+@tool
+def book_hotel(city: str, check_in: str, check_out: str) -> dict:
+    """Book a hotel room.
+
+    Args:
+        city: City to book in.
+        check_in: Check-in date (YYYY-MM-DD).
+        check_out: Check-out date (YYYY-MM-DD).
+    """
+    return {
+        "city": city,
+        "check_in": check_in,
+        "check_out": check_out,
+        "status": "booked",
+    }
+
+
+@tool
+def search_flights(origin: str, destination: str, date: str) -> dict:
+    """Search for flights.
+
+    Args:
+        origin: Departure city.
+        destination: Arrival city.
+        date: Date (YYYY-MM-DD).
+    """
+    return {
+        "origin": origin,
+        "destination": destination,
+        "date": date,
+        "flights": ["FL100"],
+    }
+
+
+EXAMPLE_TOOLS: list[MelleaTool] = [get_weather, book_hotel, search_flights]
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +313,7 @@ EXAMPLE_TOOLS = [
 # ---------------------------------------------------------------------------
 
 
-def run(question: str, tools: list[dict]) -> None:
+def run(question: str, tools: list[MelleaTool]) -> None:
     context = ChatContext()
     print("Loading model...")
     backend = LocalHFBackend(model_id=BASE_MODEL)
