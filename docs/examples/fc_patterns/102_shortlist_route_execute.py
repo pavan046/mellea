@@ -23,10 +23,12 @@ router would otherwise be confused by irrelevant options.
 Run
 ---
     uv run python docs/examples/fc_patterns/102_shortlist_route_execute.py
+    uv run python docs/examples/fc_patterns/102_shortlist_route_execute.py --checkpoint-dir /path/to/fc-system
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import mellea.stdlib.functional as mfuncs
@@ -50,18 +52,26 @@ from mellea.stdlib.context import ChatContext
 
 BASE_MODEL = "ibm-granite/granite-4.0-micro"
 
-CHECKPOINT_DIR = (
-    "/proj/dmfexp/dgt/checkpoints/tuned/tc_capabilities/"
-    "exp01_granite4_3b_rerun_tuned11/checkpoints"
+DEFAULT_CHECKPOINT_DIR = (
+    "/proj/dmfexp/tool_reasoning_code/kapanipa/intrinsics/fc-system"
 )
 
-ADAPTER_PATHS = {
-    "fc_router": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_router",
-    "fc_shortlister": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_tool_shortlisting",
-    "fc_parallel": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_parallel_tool_calling",
-    "fc_multi_step": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_multi_step_tool_calling",
-    "fc_conversational": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_conversational_detection",
-}
+
+def make_adapter_paths(checkpoint_dir: str) -> dict:
+    """Build adapter path map from a checkpoint directory.
+
+    The directory is expected to contain subdirectories named:
+        router, parallel_tool_calling, multi_step_tool_calling,
+        conversational_detection, tool_shortlisting
+    """
+    return {
+        "fc_router": f"{checkpoint_dir}/router",
+        "fc_shortlister": f"{checkpoint_dir}/tool_shortlisting",
+        "fc_parallel": f"{checkpoint_dir}/parallel_tool_calling",
+        "fc_multi_step": f"{checkpoint_dir}/multi_step_tool_calling",
+        "fc_conversational": f"{checkpoint_dir}/conversational_detection",
+    }
+
 
 # ---------------------------------------------------------------------------
 # io.yaml-equivalent configs
@@ -204,6 +214,7 @@ def shortlist_tools(
     tools: list[MelleaTool],
     context: ChatContext,
     backend: LocalHFBackend,
+    adapter_paths: dict,
 ) -> list[MelleaTool]:
     """Filter a large tool catalog down to relevant tools.
 
@@ -211,7 +222,7 @@ def shortlist_tools(
         Filtered list of MelleaTools (subset of input tools).
     """
     _ensure_adapter(
-        "fc_shortlister", ADAPTER_PATHS["fc_shortlister"], SHORTLISTER_CONFIG, backend
+        "fc_shortlister", adapter_paths["fc_shortlister"], SHORTLISTER_CONFIG, backend
     )
 
     shortlist_ctx = context.add(Message("system", SHORTLISTER_SYSTEM_MESSAGE)).add(
@@ -242,9 +253,10 @@ def route_query(
     tools: list[MelleaTool],
     context: ChatContext,
     backend: LocalHFBackend,
+    adapter_paths: dict,
 ) -> dict:
     """Classify a query as parallel, multi_step, or conversational."""
-    _ensure_adapter("fc_router", ADAPTER_PATHS["fc_router"], ROUTER_CONFIG, backend)
+    _ensure_adapter("fc_router", adapter_paths["fc_router"], ROUTER_CONFIG, backend)
 
     router_ctx = context.add(Message("system", ROUTER_SYSTEM_MESSAGE)).add(
         Message("user", question)
@@ -275,12 +287,13 @@ def execute_tool_call(
     category: str,
     context: ChatContext,
     backend: LocalHFBackend,
+    adapter_paths: dict,
 ) -> str:
     """Execute the appropriate adapter based on the routed category."""
     adapter_map = {
-        "parallel": ("fc_parallel", ADAPTER_PATHS["fc_parallel"]),
-        "multi_step": ("fc_multi_step", ADAPTER_PATHS["fc_multi_step"]),
-        "conversational": ("fc_conversational", ADAPTER_PATHS["fc_conversational"]),
+        "parallel": ("fc_parallel", adapter_paths["fc_parallel"]),
+        "multi_step": ("fc_multi_step", adapter_paths["fc_multi_step"]),
+        "conversational": ("fc_conversational", adapter_paths["fc_conversational"]),
     }
     if category not in adapter_map:
         raise ValueError(f"Unknown category: {category}")
@@ -531,31 +544,43 @@ LARGE_TOOL_CATALOG: list[MelleaTool] = [
 # ---------------------------------------------------------------------------
 
 
-def run(question: str, tools: list[MelleaTool]) -> None:
+def run(question: str, tools: list[MelleaTool], checkpoint_dir: str) -> None:
+    adapter_paths = make_adapter_paths(checkpoint_dir)
     context = ChatContext()
     print("Loading model...")
     backend = LocalHFBackend(model_id=BASE_MODEL)
 
     # Step 1 — Shortlist
     print(f"\n[1] Shortlisting from {len(tools)} tools...")
-    filtered = shortlist_tools(question, tools, context, backend)
+    filtered = shortlist_tools(question, tools, context, backend, adapter_paths)
     filtered_names = [t.name for t in filtered]
     print(f"    Kept {len(filtered)}/{len(tools)}: {filtered_names}")
 
     # Step 2 — Route (with filtered tools)
     print(f"\n[2] Routing: {question}")
-    route_result = route_query(question, filtered, context, backend)
+    route_result = route_query(question, filtered, context, backend, adapter_paths)
     category = route_result.get("category", "conversational")
     print(f"    Category: {category}")
 
     # Step 3 — Execute (with filtered tools)
     print(f"\n[3] Executing with {category} adapter...")
-    result = execute_tool_call(question, filtered, category, context, backend)
+    result = execute_tool_call(
+        question, filtered, category, context, backend, adapter_paths
+    )
     print(f"\n>> Result:\n   {result}")
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--checkpoint-dir",
+        default=DEFAULT_CHECKPOINT_DIR,
+        help="Directory containing adapter subdirs (router, tool_shortlisting, ...)",
+    )
+    args = parser.parse_args()
+
     run(
         "What's the weather in San Francisco and book a hotel there for Jan 15-17?",
         LARGE_TOOL_CATALOG,
+        args.checkpoint_dir,
     )

@@ -25,10 +25,12 @@ score, so values may be approximate.  Treat the threshold as a tunable parameter
 Run
 ---
     uv run python docs/examples/fc_patterns/103_confidence_gated_routing.py
+    uv run python docs/examples/fc_patterns/103_confidence_gated_routing.py --checkpoint-dir /path/to/fc-system
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import mellea.stdlib.functional as mfuncs
@@ -53,18 +55,26 @@ from mellea.stdlib.context import ChatContext
 BASE_MODEL = "ibm-granite/granite-4.0-micro"
 CONFIDENCE_THRESHOLD = 0.7
 
-CHECKPOINT_DIR = (
-    "/proj/dmfexp/dgt/checkpoints/tuned/tc_capabilities/"
-    "exp01_granite4_3b_rerun_tuned11/checkpoints"
+DEFAULT_CHECKPOINT_DIR = (
+    "/proj/dmfexp/tool_reasoning_code/kapanipa/intrinsics/fc-system"
 )
 
-ADAPTER_PATHS = {
-    "fc_router": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_router",
-    "fc_parallel": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_parallel_tool_calling",
-    "fc_multi_step": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_multi_step_tool_calling",
-    "fc_conversational": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_conversational_detection",
-    "fc_baseline": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_combined_baseline",
-}
+
+def make_adapter_paths(checkpoint_dir: str) -> dict:
+    """Build adapter path map from a checkpoint directory.
+
+    The directory is expected to contain subdirectories named:
+        router, parallel_tool_calling, multi_step_tool_calling,
+        conversational_detection, combined_baseline
+    """
+    return {
+        "fc_router": f"{checkpoint_dir}/router",
+        "fc_parallel": f"{checkpoint_dir}/parallel_tool_calling",
+        "fc_multi_step": f"{checkpoint_dir}/multi_step_tool_calling",
+        "fc_conversational": f"{checkpoint_dir}/conversational_detection",
+        "fc_baseline": f"{checkpoint_dir}/combined_baseline",
+    }
+
 
 # ---------------------------------------------------------------------------
 # Configs — router includes confidence field
@@ -185,6 +195,7 @@ def route_query_with_confidence(
     tools: list[MelleaTool],
     context: ChatContext,
     backend: LocalHFBackend,
+    adapter_paths: dict,
 ) -> dict:
     """Classify a query and return a confidence score.
 
@@ -192,7 +203,7 @@ def route_query_with_confidence(
         Dict with ``category``, ``confidence`` (float), and ``reasoning``.
     """
     _ensure_adapter(
-        "fc_router", ADAPTER_PATHS["fc_router"], ROUTER_CONFIG_WITH_CONFIDENCE, backend
+        "fc_router", adapter_paths["fc_router"], ROUTER_CONFIG_WITH_CONFIDENCE, backend
     )
 
     router_ctx = context.add(Message("system", ROUTER_SYSTEM_MESSAGE)).add(
@@ -231,7 +242,7 @@ def execute_with_adapter(
     adapter_path: str,
     context: ChatContext,
     backend: LocalHFBackend,
-) -> str:
+) -> str:  # adapter_path is resolved by caller from adapter_paths dict
     """Execute with a specific named adapter."""
     tc_config: dict = EXECUTOR_CONFIG.copy()
     tc_config["response_format"] = TOOL_CALL_RESPONSE_FORMAT
@@ -313,14 +324,17 @@ EXAMPLE_TOOLS: list[MelleaTool] = [get_weather, book_hotel, search_flights]
 # ---------------------------------------------------------------------------
 
 
-def run(question: str, tools: list[MelleaTool]) -> None:
+def run(question: str, tools: list[MelleaTool], checkpoint_dir: str) -> None:
+    adapter_paths = make_adapter_paths(checkpoint_dir)
     context = ChatContext()
     print("Loading model...")
     backend = LocalHFBackend(model_id=BASE_MODEL)
 
     # Step 1 — Route with confidence
     print(f"\n[1] Routing: {question}")
-    route_result = route_query_with_confidence(question, tools, context, backend)
+    route_result = route_query_with_confidence(
+        question, tools, context, backend, adapter_paths
+    )
     category = route_result.get("category", "conversational")
     confidence = route_result.get("confidence", 0.0)
     print(f"    Category:   {category}")
@@ -334,8 +348,8 @@ def run(question: str, tools: list[MelleaTool]) -> None:
         result = MelleaSession(backend, context).chat(question).content
     elif confidence >= CONFIDENCE_THRESHOLD:
         adapter_map = {
-            "parallel": ("fc_parallel", ADAPTER_PATHS["fc_parallel"]),
-            "multi_step": ("fc_multi_step", ADAPTER_PATHS["fc_multi_step"]),
+            "parallel": ("fc_parallel", adapter_paths["fc_parallel"]),
+            "multi_step": ("fc_multi_step", adapter_paths["fc_multi_step"]),
         }
         name, path = adapter_map[category]
         print(f"\n[2] High confidence — using specialized {category} adapter...")
@@ -346,7 +360,7 @@ def run(question: str, tools: list[MelleaTool]) -> None:
             question,
             tools,
             "fc_baseline",
-            ADAPTER_PATHS["fc_baseline"],
+            adapter_paths["fc_baseline"],
             context,
             backend,
         )
@@ -355,7 +369,19 @@ def run(question: str, tools: list[MelleaTool]) -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--checkpoint-dir",
+        default=DEFAULT_CHECKPOINT_DIR,
+        help="Directory containing adapter subdirs (router, combined_baseline, ...)",
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print("Test: Parallel (should be high confidence)")
     print("=" * 60)
-    run("What's the weather in San Francisco and New York?", EXAMPLE_TOOLS)
+    run(
+        "What's the weather in San Francisco and New York?",
+        EXAMPLE_TOOLS,
+        args.checkpoint_dir,
+    )

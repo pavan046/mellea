@@ -36,10 +36,12 @@ self-correct using a trained reflection adapter rather than a generic prompt.
 Run
 ---
     uv run python docs/examples/fc_patterns/104_reflect_and_retry.py
+    uv run python docs/examples/fc_patterns/104_reflect_and_retry.py --checkpoint-dir /path/to/fc-system
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import mellea.stdlib.functional as mfuncs
@@ -64,18 +66,26 @@ from mellea.stdlib.context import ChatContext
 BASE_MODEL = "ibm-granite/granite-4.0-micro"
 MAX_RETRIES = 3
 
-CHECKPOINT_DIR = (
-    "/proj/dmfexp/dgt/checkpoints/tuned/tc_capabilities/"
-    "exp01_granite4_3b_rerun_tuned11/checkpoints"
+DEFAULT_CHECKPOINT_DIR = (
+    "/proj/dmfexp/tool_reasoning_code/kapanipa/intrinsics/fc-system"
 )
 
-ADAPTER_PATHS = {
-    "fc_router": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_router",
-    "fc_parallel": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_parallel_tool_calling",
-    "fc_multi_step": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_multi_step_tool_calling",
-    "fc_conversational": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_conversational_detection",
-    "fc_reflector": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_reflector",
-}
+
+def make_adapter_paths(checkpoint_dir: str) -> dict:
+    """Build adapter path map from a checkpoint directory.
+
+    The directory is expected to contain subdirectories named:
+        router, parallel_tool_calling, multi_step_tool_calling,
+        conversational_detection, reflector
+    """
+    return {
+        "fc_router": f"{checkpoint_dir}/router",
+        "fc_parallel": f"{checkpoint_dir}/parallel_tool_calling",
+        "fc_multi_step": f"{checkpoint_dir}/multi_step_tool_calling",
+        "fc_conversational": f"{checkpoint_dir}/conversational_detection",
+        "fc_reflector": f"{checkpoint_dir}/reflector",
+    }
+
 
 # ---------------------------------------------------------------------------
 # Configs
@@ -282,9 +292,10 @@ def route_query(
     tools: list[MelleaTool],
     context: ChatContext,
     backend: LocalHFBackend,
+    adapter_paths: dict,
 ) -> dict:
     """Classify a query as parallel, multi_step, or conversational."""
-    _ensure_adapter("fc_router", ADAPTER_PATHS["fc_router"], ROUTER_CONFIG, backend)
+    _ensure_adapter("fc_router", adapter_paths["fc_router"], ROUTER_CONFIG, backend)
 
     router_ctx = context.add(Message("system", ROUTER_SYSTEM_MESSAGE)).add(
         Message("user", question)
@@ -315,13 +326,14 @@ def execute_tool_call(
     category: str,
     context: ChatContext,
     backend: LocalHFBackend,
+    adapter_paths: dict,
     guidance: str | None = None,
 ) -> str:
     """Execute with optional reflection guidance injected into the prompt."""
     adapter_map = {
-        "parallel": ("fc_parallel", ADAPTER_PATHS["fc_parallel"]),
-        "multi_step": ("fc_multi_step", ADAPTER_PATHS["fc_multi_step"]),
-        "conversational": ("fc_conversational", ADAPTER_PATHS["fc_conversational"]),
+        "parallel": ("fc_parallel", adapter_paths["fc_parallel"]),
+        "multi_step": ("fc_multi_step", adapter_paths["fc_multi_step"]),
+        "conversational": ("fc_conversational", adapter_paths["fc_conversational"]),
     }
     if category not in adapter_map:
         raise ValueError(f"Unknown category: {category}")
@@ -368,6 +380,7 @@ def run_with_retry(
     category: str,
     context: ChatContext,
     backend: LocalHFBackend,
+    adapter_paths: dict,
 ) -> str:
     """Execute tool calls with reflection-based retry on validation failure.
 
@@ -381,7 +394,13 @@ def run_with_retry(
 
         # INSTRUCT: generate tool calls
         result = execute_tool_call(
-            question, tools, category, context, backend, guidance=guidance
+            question,
+            tools,
+            category,
+            context,
+            backend,
+            adapter_paths,
+            guidance=guidance,
         )
         print(f"    Output: {result[:120]}...")
 
@@ -461,29 +480,46 @@ EXAMPLE_TOOLS: list[MelleaTool] = [get_weather, book_hotel, search_flights]
 # ---------------------------------------------------------------------------
 
 
-def run(question: str, tools: list[MelleaTool]) -> None:
+def run(question: str, tools: list[MelleaTool], checkpoint_dir: str) -> None:
+    adapter_paths = make_adapter_paths(checkpoint_dir)
     context = ChatContext()
     print("Loading model...")
     backend = LocalHFBackend(model_id=BASE_MODEL)
 
     # Step 1 — Route
     print(f"\n[1] Routing: {question}")
-    route_result = route_query(question, tools, context, backend)
+    route_result = route_query(question, tools, context, backend, adapter_paths)
     category = route_result.get("category", "conversational")
     print(f"    Category: {category}")
 
     # Step 2 — Execute with validate-reflect-retry loop
     print(f"\n[2] Executing with {category} adapter (with reflection retry)...")
     if category == "conversational":
-        result = execute_tool_call(question, tools, category, context, backend)
+        result = execute_tool_call(
+            question, tools, category, context, backend, adapter_paths
+        )
     else:
-        result = run_with_retry(question, tools, category, context, backend)
+        result = run_with_retry(
+            question, tools, category, context, backend, adapter_paths
+        )
 
     print(f"\n>> Final Result:\n   {result}")
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--checkpoint-dir",
+        default=DEFAULT_CHECKPOINT_DIR,
+        help="Directory containing adapter subdirs (router, reflector, ...)",
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print("Test: Parallel with validation + reflection retry")
     print("=" * 60)
-    run("What's the weather in San Francisco and New York?", EXAMPLE_TOOLS)
+    run(
+        "What's the weather in San Francisco and New York?",
+        EXAMPLE_TOOLS,
+        args.checkpoint_dir,
+    )

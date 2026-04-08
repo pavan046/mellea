@@ -21,9 +21,12 @@ routing errors.  Run the same test queries as 101 to compare.
 Run
 ---
     uv run python docs/examples/fc_patterns/105_direct_baseline.py
+    uv run python docs/examples/fc_patterns/105_direct_baseline.py --checkpoint-dir /path/to/fc-system
 """
 
 from __future__ import annotations
+
+import argparse
 
 import mellea.stdlib.functional as mfuncs
 from mellea.backends import ModelOption, tool
@@ -46,14 +49,18 @@ from mellea.stdlib.context import ChatContext
 
 BASE_MODEL = "ibm-granite/granite-4.0-micro"
 
-CHECKPOINT_DIR = (
-    "/proj/dmfexp/dgt/checkpoints/tuned/tc_capabilities/"
-    "exp01_granite4_3b_rerun_tuned11/checkpoints"
+DEFAULT_CHECKPOINT_DIR = (
+    "/proj/dmfexp/tool_reasoning_code/kapanipa/intrinsics/fc-system"
 )
 
-ADAPTER_PATHS = {
-    "fc_baseline": f"{CHECKPOINT_DIR}/exp01_granite4_3b_rerun_tuned11_combined_baseline"
-}
+
+def make_adapter_paths(checkpoint_dir: str) -> dict:
+    """Build adapter path map from a checkpoint directory.
+
+    The directory is expected to contain a subdirectory named: combined_baseline
+    """
+    return {"fc_baseline": f"{checkpoint_dir}/combined_baseline"}
+
 
 BASELINE_CONFIG = {
     "model": "fc_baseline",
@@ -182,13 +189,14 @@ EXAMPLE_TOOLS: list[MelleaTool] = [get_weather, book_hotel, search_flights]
 # ---------------------------------------------------------------------------
 
 
-def run(question: str, tools: list[MelleaTool]) -> None:
+def run(question: str, tools: list[MelleaTool], checkpoint_dir: str) -> None:
+    adapter_paths = make_adapter_paths(checkpoint_dir)
     context = ChatContext()
     print("Loading model...")
     backend = LocalHFBackend(model_id=BASE_MODEL)
 
     _ensure_adapter(
-        "fc_baseline", ADAPTER_PATHS["fc_baseline"], BASELINE_CONFIG, backend
+        "fc_baseline", adapter_paths["fc_baseline"], BASELINE_CONFIG, backend
     )
 
     exec_ctx = context.add(
@@ -214,11 +222,23 @@ def run(question: str, tools: list[MelleaTool]) -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--checkpoint-dir",
+        default=DEFAULT_CHECKPOINT_DIR,
+        help="Directory containing adapter subdirs (combined_baseline, ...)",
+    )
+    args = parser.parse_args()
+
     # Same test queries as 101 for direct comparison
     print("=" * 60)
     print("Test 1: Parallel")
     print("=" * 60)
-    run("What's the weather in San Francisco and New York?", EXAMPLE_TOOLS)
+    run(
+        "What's the weather in San Francisco and New York?",
+        EXAMPLE_TOOLS,
+        args.checkpoint_dir,
+    )
 
     print("\n\n" + "=" * 60)
     print("Test 2: Multi-step")
@@ -226,9 +246,10 @@ if __name__ == "__main__":
     run(
         "Find flights from SF to NYC on Jan 15, then book a hotel for that night.",
         EXAMPLE_TOOLS,
+        args.checkpoint_dir,
     )
 
     print("\n\n" + "=" * 60)
     print("Test 3: Conversational")
     print("=" * 60)
-    run("What is the capital of France?", EXAMPLE_TOOLS)
+    run("What is the capital of France?", EXAMPLE_TOOLS, args.checkpoint_dir)
