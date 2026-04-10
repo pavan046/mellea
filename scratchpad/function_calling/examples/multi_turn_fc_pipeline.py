@@ -332,9 +332,9 @@ def execute_fc(
     _ensure_adapter(adapter_name, adapter_path, config, backend)
 
     if category == "conversational":
-        ctx = conversation_ctx.add(Message("system", CONVERSATIONAL_SYSTEM_MESSAGE)).add(
-            Message("user", user_msg)
-        )
+        ctx = conversation_ctx.add(
+            Message("system", CONVERSATIONAL_SYSTEM_MESSAGE)
+        ).add(Message("user", user_msg))
         mot, _ = mfuncs.act(
             Intrinsic(adapter_name),
             ctx,

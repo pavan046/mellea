@@ -1,6 +1,224 @@
-# Function-Calling Pipeline: Notes and Bugs
+# Function-Calling Pipeline
 
-## Files
+## BenchmarkServer
+
+### Installation
+
+Install the backend and server extras from the repo root:
+
+```bash
+uv sync --extra backends --extra server
+```
+
+### Starting the server
+
+```bash
+uv run python scratchpad/function_calling/fc/server.py \
+    --model ibm-granite/granite-4.0-micro \
+    --adapters scratchpad/lora/fc-system \
+    --port 8080
+```
+
+To override a single adapter without changing the rest:
+
+```bash
+uv run python scratchpad/function_calling/fc/server.py \
+    --model ibm-granite/granite-4.0-micro \
+    --adapters scratchpad/lora/fc-system \
+    --adapter-override fc_router=/experiments/my_router \
+    --port 8080
+```
+
+Once the server is up, the interactive API docs are available at `http://localhost:8080/docs`.
+
+---
+
+### Sample requests
+
+#### Opening turn (Turn 1) — POST /chat
+
+`/chat` is the BFCL and ACEBench endpoint. The body contains only `messages` and `tools`.
+
+```bash
+curl -s -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What'\''s the weather like in San Francisco and New York right now?"}
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get the current weather for a location.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {"type": "string", "description": "City name, e.g. '\''San Francisco'\''."}
+            },
+            "required": ["location"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "search_flights",
+          "description": "Search for available flights between two cities.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "origin": {"type": "string", "description": "Departure city."},
+              "destination": {"type": "string", "description": "Arrival city."},
+              "date": {"type": "string", "description": "Travel date (YYYY-MM-DD)."}
+            },
+            "required": ["origin", "destination", "date"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "book_hotel",
+          "description": "Book a hotel room in a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {"type": "string", "description": "City to book in."},
+              "checkin": {"type": "string", "description": "Check-in date (YYYY-MM-DD)."},
+              "checkout": {"type": "string", "description": "Check-out date (YYYY-MM-DD)."}
+            },
+            "required": ["city", "checkin", "checkout"]
+          }
+        }
+      }
+    ]
+  }'
+```
+
+Expected response:
+
+```json
+{
+  "type": "tool_calls",
+  "tool_calls": [
+    {"name": "get_weather", "arguments": {"location": "San Francisco"}},
+    {"name": "get_weather", "arguments": {"location": "New York"}}
+  ],
+  "content": null
+}
+```
+
+---
+
+#### Turn 4 (multi-turn, hotel booking) — POST /v1/chat/completions
+
+`/v1/chat/completions` is the TAU2 endpoint. It wraps the same `messages` and `tools` in a standard OpenAI ChatCompletion envelope and returns a full ChatCompletion response object.
+
+```bash
+curl -s -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "fc-agent",
+    "messages": [
+      {"role": "user", "content": "What'\''s the weather like in San Francisco and New York right now?"},
+      {"role": "assistant", "content": null, "tool_calls": [
+        {"id": "call_0", "type": "function", "function": {"name": "get_weather", "arguments": "{\"location\": \"San Francisco\"}"}},
+        {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"location\": \"New York\"}"}}
+      ]},
+      {"role": "tool", "tool_call_id": "call_0", "content": "{\"location\": \"San Francisco\", \"condition\": \"sunny\", \"temp_f\": 72, \"humidity_pct\": 55}"},
+      {"role": "tool", "tool_call_id": "call_1", "content": "{\"location\": \"New York\", \"condition\": \"overcast\", \"temp_f\": 58, \"humidity_pct\": 70}"},
+      {"role": "assistant", "content": "San Francisco is sunny at 72°F. New York is overcast at 58°F.", "tool_calls": null},
+      {"role": "user", "content": "Which of those two cities would you recommend for an outdoor event?"},
+      {"role": "assistant", "content": "San Francisco would be the better choice given the sunny skies and warmer temperature.", "tool_calls": null},
+      {"role": "user", "content": "Search for flights from San Francisco to New York on January 15."},
+      {"role": "assistant", "content": null, "tool_calls": [
+        {"id": "call_0", "type": "function", "function": {"name": "search_flights", "arguments": "{\"origin\": \"San Francisco\", \"destination\": \"New York\", \"date\": \"2024-01-15\"}"}}
+      ]},
+      {"role": "tool", "tool_call_id": "call_0", "content": "{\"origin\": \"San Francisco\", \"destination\": \"New York\", \"date\": \"2024-01-15\", \"flights\": [{\"flight_id\": \"FL100\", \"departure\": \"08:00\", \"arrival\": \"14:30\", \"price_usd\": 320}, {\"flight_id\": \"FL200\", \"departure\": \"13:45\", \"arrival\": \"20:15\", \"price_usd\": 275}]}"},
+      {"role": "assistant", "content": "Found two flights: FL100 at 08:00 for $320 and FL200 at 13:45 for $275.", "tool_calls": null},
+      {"role": "user", "content": "Book a hotel in New York from January 15 to January 16."}
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get the current weather for a location.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {"type": "string", "description": "City name, e.g. '\''San Francisco'\''."}
+            },
+            "required": ["location"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "search_flights",
+          "description": "Search for available flights between two cities.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "origin": {"type": "string", "description": "Departure city."},
+              "destination": {"type": "string", "description": "Arrival city."},
+              "date": {"type": "string", "description": "Travel date (YYYY-MM-DD)."}
+            },
+            "required": ["origin", "destination", "date"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "book_hotel",
+          "description": "Book a hotel room in a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {"type": "string", "description": "City to book in."},
+              "checkin": {"type": "string", "description": "Check-in date (YYYY-MM-DD)."},
+              "checkout": {"type": "string", "description": "Check-out date (YYYY-MM-DD)."}
+            },
+            "required": ["city", "checkin", "checkout"]
+          }
+        }
+      }
+    ]
+  }'
+```
+
+Expected response:
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "created": 1234567890,
+  "model": "fc-agent",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {"id": "call_0", "type": "function", "function": {"name": "book_hotel", "arguments": "{\"city\": \"New York\", \"checkin\": \"2024-01-15\", \"checkout\": \"2024-01-16\"}"}}
+      ]
+    },
+    "finish_reason": "tool_calls"
+  }],
+  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+}
+```
+
+---
+
+## Legacy files and bug notes
+
+### Files
 
 | File | Description |
 |------|-------------|
@@ -8,7 +226,7 @@
 | `simple_pipeline_mellea_conventions.py` | Same pipeline using `@tool` decorator and Mellea conventions |
 | `multi_turn_fc_pipeline.py` | Multi-turn pipeline with router, executor, and conversational LoRAs; native tool execution via `parse_and_execute_tool_calls` |
 
-## Bugs Found in Mellea
+### Bugs Found in Mellea
 
 ### 1. `find_func` only recurses into the first value of a dict
 
@@ -93,7 +311,7 @@ This means `to_tool_calls` is never called for intrinsic-based generation, even 
 
 ---
 
-## Workarounds
+### Workarounds
 
 `multi_turn_fc_pipeline.py` implements `parse_and_execute_tool_calls`, a local helper that sidesteps bugs 1–3 by parsing `mot.value` directly:
 
