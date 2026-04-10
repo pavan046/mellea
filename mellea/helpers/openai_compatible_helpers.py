@@ -1,6 +1,7 @@
 """A file for helper functions that deal with OpenAI API compatible helpers."""
 
 import json
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -8,6 +9,7 @@ from ..backends.tools import validate_tool_arguments
 from ..core import MelleaLogger, ModelToolCall
 from ..core.base import AbstractMelleaTool
 from ..stdlib.components import Document, Message
+from ..stdlib.components.chat import ToolMessage
 
 
 def extract_model_tool_requests(
@@ -151,6 +153,16 @@ def message_to_openai_message(msg: Message) -> dict:
         images, ``"content"`` is a list of text and image-URL dicts; otherwise it
         is a plain string.
     """
+    if isinstance(msg, ToolMessage):
+        # The Granite formatter's ToolResultMessage requires a tool_call_id field
+        # (it is non-optional in the Pydantic schema). The value is discarded
+        # during prompt rendering, so any stable unique string satisfies the
+        # constraint.
+        return {
+            "role": msg.role,
+            "content": msg.content,
+            "tool_call_id": str(uuid.uuid4()),
+        }
     if msg.images is not None:
         img_list = [
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}}
