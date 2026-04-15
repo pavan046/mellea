@@ -25,8 +25,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Make the fc package importable when running from the repo root.
+# Make the fc package and mellea importable when running outside uv/venv.
+_repo_root = str(Path(__file__).resolve().parents[3])
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, _repo_root)
 
 from fc.pipeline import FunctionCallingPipeline
 
@@ -209,14 +211,19 @@ def run(pipeline: FunctionCallingPipeline) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FCPipeline multi-turn example.")
-    parser.add_argument(
+    model_group = parser.add_mutually_exclusive_group()
+    model_group.add_argument(
         "--model",
-        required=True,
         help="HuggingFace model ID (e.g. ibm-granite/granite-4.0-micro)",
+    )
+    model_group.add_argument(
+        "--model-path",
+        default=str(Path(__file__).resolve().parents[3] / "FCIntrinsics" / "granite-4.1-3b"),
+        help="Local path to a model directory",
     )
     parser.add_argument(
         "--adapters",
-        required=True,
+        default=str(Path(__file__).resolve().parents[3] / "FCIntrinsics" / "fc-system"),
         help="Root directory containing adapter subdirs (router, parallel_tool_calling, "
         "multi_step_tool_calling, conversational_detection). Paths are auto-discovered "
         "by convention.",
@@ -238,8 +245,9 @@ if __name__ == "__main__":
         name, path = item.split("=", 1)
         overrides[name] = path
 
-    print("Loading model...")
-    backend = LocalHFBackend(model_id=args.model)
+    model_id = args.model or args.model_path
+    print(f"Loading model from {'local path' if args.model_path else 'Hub'}: {model_id}")
+    backend = LocalHFBackend(model_id=model_id)
 
     pipeline = FunctionCallingPipeline(
         backend=backend, adapters_dir=args.adapters, adapter_overrides=overrides or None

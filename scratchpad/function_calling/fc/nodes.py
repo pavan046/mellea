@@ -185,10 +185,12 @@ class RouterNode(Node):
         Returns:
             One of "parallel", "multi_step", or "conversational".
         """
+        # TODO: replace print statements with proper logging (e.g. FancyLogger)
         tool_summary = self._tools_to_summary(tools) if tools else None
         router_ctx = self._build_ctx(
             ctx, self._backend, self._ADAPTER, tool_summary=tool_summary
         )
+        print(f"  [inference] Running {self._ADAPTER}...")
         mot, _ = mfuncs.act(
             Intrinsic(self._ADAPTER),
             router_ctx,
@@ -197,7 +199,9 @@ class RouterNode(Node):
             strategy=None,
         )
         assert mot.is_computed()
-        return self._parse_category(mot.value or "")
+        category = self._parse_category(mot.value or "")
+        print(f"  [inference] {self._ADAPTER} → {category}")
+        return category
 
     @staticmethod
     def _parse_category(raw: str) -> str:
@@ -256,6 +260,7 @@ class ExecutorNode(Node):
             On parse failure, returns a conversational error message.
         """
         executor_ctx = self._build_ctx(ctx, self._backend, self._adapter_name)
+        print(f"  [inference] Running {self._adapter_name}...")
         mot, _ = mfuncs.act(
             Intrinsic(self._adapter_name),
             executor_ctx,
@@ -264,6 +269,7 @@ class ExecutorNode(Node):
             strategy=None,
         )
         assert mot.is_computed()
+        print(f"  [inference] {self._adapter_name} done")
         return _parse_tool_calls(mot.value or "")
 
 
@@ -299,6 +305,7 @@ class ConversationalNode(Node):
                 {"role": "assistant", "content": "...", "tool_calls": None}
         """
         conv_ctx = self._build_ctx(ctx, self._backend, self._ADAPTER)
+        print(f"  [inference] Running {self._ADAPTER}...")
         mot, _ = mfuncs.act(
             Intrinsic(self._ADAPTER),
             conv_ctx,
@@ -307,6 +314,7 @@ class ConversationalNode(Node):
             strategy=None,
         )
         assert mot.is_computed()
+        print(f"  [inference] {self._ADAPTER} done")
         raw = mot.value or ""
         try:
             content = json.loads(raw).get("response", raw)

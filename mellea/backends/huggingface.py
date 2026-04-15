@@ -492,6 +492,7 @@ class LocalHFBackend(FormatterBackend, AdapterMixin):
                 "passing in model options when generating with an adapter; some model options may be overwritten / ignored"
             )
 
+
         linearized_ctx = ctx.view_for_generation()
         assert linearized_ctx is not None, (
             "If ctx.is_chat_context, then the context should be linearizable."

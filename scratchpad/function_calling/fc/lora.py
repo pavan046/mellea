@@ -145,6 +145,11 @@ def ensure_adapter(
         backend: The LocalHFBackend instance to register with.
         adapter_type: Adapter type, LoRA by default.
     """
+    # TODO: replace print statements with proper logging (e.g. FancyLogger)
     qualified = f"{name}_{adapter_type.value}"
     if qualified not in backend._added_adapters:
+        print(f"  [adapter] Loading {name} from {path}")
         backend.add_adapter(LocalIntrinsicAdapter(name, path, adapter_type))
+        print(f"  [adapter] {name} loaded successfully")
+    else:
+        print(f"  [adapter] {name} already loaded, skipping")
