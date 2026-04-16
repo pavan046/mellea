@@ -584,6 +584,23 @@ class LocalHFBackend(FormatterBackend, AdapterMixin):
             )
         )
 
+        # TODO: replace with proper logging
+        print(
+            f"\n  [final prompt] ── {action.intrinsic_name} ──────────────────────────"
+        )
+        try:
+            print(
+                self._tokenizer.decode(
+                    generate_input["input_tokens"][0], skip_special_tokens=False
+                )
+            )
+        except Exception as _e:
+            print(f"  [could not decode prompt: {_e}]")
+            print(
+                f"  generate_input keys: {list(generate_input.keys()) if hasattr(generate_input, 'keys') else type(generate_input)}"
+            )
+        print(f"  {'─' * 60}\n")
+
         chat_response = asyncio.to_thread(
             self._generate_with_adapter_lock,
             adapter.qualified_name,
