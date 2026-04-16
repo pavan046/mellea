@@ -25,15 +25,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Make the fc package and mellea importable when running outside uv/venv.
-_repo_root = str(Path(__file__).resolve().parents[3])
 sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.insert(0, _repo_root)
 
 from fc.pipeline import FunctionCallingPipeline
 
 from mellea.backends import tool
 from mellea.backends.huggingface import LocalHFBackend
+from mellea.formatters.template_formatter import TemplateFormatter
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -211,19 +209,20 @@ def run(pipeline: FunctionCallingPipeline) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FCPipeline multi-turn example.")
-    model_group = parser.add_mutually_exclusive_group()
+    model_group = parser.add_mutually_exclusive_group(required=True)
     model_group.add_argument(
-        "--model",
-        help="HuggingFace model ID (e.g. ibm-granite/granite-4.0-micro)",
+        "--model", help="HuggingFace model ID (e.g. ibm-granite/granite-4.0-micro)"
     )
-    model_group.add_argument(
-        "--model-path",
-        default=str(Path(__file__).resolve().parents[3] / "FCIntrinsics" / "granite-4.1-3b"),
-        help="Local path to a model directory",
+    model_group.add_argument("--model-path", help="Local path to a model directory")
+    parser.add_argument(
+        "--model-name",
+        help="Model name for template resolution when using --model-path "
+        "(e.g. ibm-granite/granite-4.1-3b). Required when the directory name "
+        "is not a recognizable model ID.",
     )
     parser.add_argument(
         "--adapters",
-        default=str(Path(__file__).resolve().parents[3] / "FCIntrinsics" / "fc-system"),
+        required=True,
         help="Root directory containing adapter subdirs (router, parallel_tool_calling, "
         "multi_step_tool_calling, conversational_detection). Paths are auto-discovered "
         "by convention.",
@@ -238,6 +237,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    if args.model_path and args.model_name is None:
+        # Fall back to the directory name as the model identifier for template lookup.
+        args.model_name = Path(args.model_path).name
+
     overrides: dict[str, str] = {}
     for item in args.adapter_override:
         if "=" not in item:
@@ -245,9 +248,15 @@ if __name__ == "__main__":
         name, path = item.split("=", 1)
         overrides[name] = path
 
-    model_id = args.model or args.model_path
-    print(f"Loading model from {'local path' if args.model_path else 'Hub'}: {model_id}")
-    backend = LocalHFBackend(model_id=model_id)
+    if args.model:
+        print(f"Loading model from Hub: {args.model}")
+        backend = LocalHFBackend(model_id=args.model)
+    else:
+        print(
+            f"Loading model from local path: {args.model_path} (name: {args.model_name})"
+        )
+        formatter = TemplateFormatter(model_id=args.model_name)
+        backend = LocalHFBackend(model_id=args.model_path, formatter=formatter)
 
     pipeline = FunctionCallingPipeline(
         backend=backend, adapters_dir=args.adapters, adapter_overrides=overrides or None

@@ -12,8 +12,22 @@ that FCPipeline expects lives in fc/adapters/. This file contains only HTTP
 plumbing and startup logic.
 
 Usage:
+    # Hub model:
     uv run python scratchpad/function_calling/fc/server.py \\
         --model ibm-granite/granite-4.0-micro \\
+        --adapters /path/to/fc-system \\
+        --port 8080
+
+    # Local model path (directory name used as model ID for template resolution):
+    uv run python scratchpad/function_calling/fc/server.py \\
+        --model-path /checkpoints/granite-4.1-3b \\
+        --adapters /path/to/fc-system \\
+        --port 8080
+
+    # Local model path with explicit model name for template resolution:
+    uv run python scratchpad/function_calling/fc/server.py \\
+        --model-path /checkpoints/my-finetune \\
+        --model-name ibm-granite/granite-4.1-3b \\
         --adapters /path/to/fc-system \\
         --port 8080
 
@@ -183,6 +197,7 @@ def _build_pipeline(args: argparse.Namespace):
     # Deferred imports: heavy deps (torch, transformers) only loaded at server start.
     from fc.pipeline import FunctionCallingPipeline
     from mellea.backends.huggingface import LocalHFBackend
+    from mellea.formatters.template_formatter import TemplateFormatter
 
     overrides: dict[str, str] = {}
     for item in args.adapter_override or []:
@@ -192,8 +207,16 @@ def _build_pipeline(args: argparse.Namespace):
         name, path = item.split("=", 1)
         overrides[name] = path
 
-    logger.info("Loading model: %s", args.model)
-    backend = LocalHFBackend(model_id=args.model)
+    if args.model:
+        logger.info("Loading model from Hub: %s", args.model)
+        backend = LocalHFBackend(model_id=args.model)
+    else:
+        model_name = args.model_name or Path(args.model_path).name
+        logger.info(
+            "Loading model from local path: %s (name: %s)", args.model_path, model_name
+        )
+        formatter = TemplateFormatter(model_id=model_name)
+        backend = LocalHFBackend(model_id=args.model_path, formatter=formatter)
 
     pipeline = FunctionCallingPipeline(
         backend=backend, adapters_dir=args.adapters, adapter_overrides=overrides or None
@@ -215,10 +238,16 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
+    model_group = parser.add_mutually_exclusive_group(required=True)
+    model_group.add_argument(
+        "--model", help="HuggingFace model ID (e.g. ibm-granite/granite-4.0-micro)."
+    )
+    model_group.add_argument("--model-path", help="Local path to a model directory.")
     parser.add_argument(
-        "--model",
-        required=True,
-        help="HuggingFace model ID or local path (e.g. ibm-granite/granite-4.0-micro).",
+        "--model-name",
+        help="Model name for template resolution when using --model-path "
+        "(e.g. ibm-granite/granite-4.1-3b). Defaults to the directory name "
+        "when not provided.",
     )
     parser.add_argument(
         "--adapters",

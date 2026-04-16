@@ -48,6 +48,9 @@ from mellea.backends.adapters.catalog import (
     IntriniscsCatalogEntry,
 )
 from mellea.backends.huggingface import LocalHFBackend
+from mellea.core import FancyLogger
+
+logger = FancyLogger.get_logger()
 
 
 class LocalIntrinsicAdapter(IntrinsicAdapter):
@@ -148,8 +151,8 @@ def ensure_adapter(
     # TODO: replace print statements with proper logging (e.g. FancyLogger)
     qualified = f"{name}_{adapter_type.value}"
     if qualified not in backend._added_adapters:
-        print(f"  [adapter] Loading {name} from {path}")
+        logger.info("Loading adapter %s from %s", name, path)
         backend.add_adapter(LocalIntrinsicAdapter(name, path, adapter_type))
-        print(f"  [adapter] {name} loaded successfully")
+        logger.info("Adapter %s loaded successfully", name)
     else:
-        print(f"  [adapter] {name} already loaded, skipping")
+        logger.debug("Adapter %s already loaded, skipping", name)

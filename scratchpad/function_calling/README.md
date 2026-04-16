@@ -15,7 +15,7 @@ uv sync --extra backends --extra server
 ```bash
 uv run python scratchpad/function_calling/fc/server.py \
     --model ibm-granite/granite-4.0-micro \
-    --adapters scratchpad/lora/fc-system \
+    --adapters scratchpad/lora/fc-system-4.0 \
     --port 8080
 ```
 
@@ -24,7 +24,7 @@ To override a single adapter without changing the rest:
 ```bash
 uv run python scratchpad/function_calling/fc/server.py \
     --model ibm-granite/granite-4.0-micro \
-    --adapters scratchpad/lora/fc-system \
+    --adapters scratchpad/lora/fc-system-4.0 \
     --adapter-override fc_router=/experiments/my_router \
     --port 8080
 ```
@@ -213,6 +213,102 @@ Expected response:
   "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 }
 ```
+
+---
+
+## Open Questions and Known Limitations
+
+### 1. GPU hardware is the first and most impactful lever
+
+On a MacBook Pro (MPS), each LoRA forward pass takes roughly 2-3 seconds for a 3B
+model. `FunctionCallingPipeline` makes 2 serial passes per request (router +
+executor), which matches the observed ~13s/request in BFCL. On a server GPU (A100,
+H100), a single forward pass for the same model takes ~100-200ms. That alone
+brings per-request latency from ~13s to ~0.5-1s with no code changes whatsoever.
+
+**ROI: High, unconditional.** Hardware is the only intervention with no
+architectural conditions. Everything else discussed below has conditions that may
+not hold.
+
+### 2. Mellea's intrinsic system serializes all generation behind a single lock
+
+`LocalHFBackend` acquires `_generation_lock` for every generation call. This is
+correct: HF's PEFT adapter API allows only one adapter active at a time, so no two
+requests can overlap regardless of how many threads or HTTP connections are open.
+The lock is a Mellea constraint specific to `LocalHFBackend`, not a fundamental
+multi-LoRA constraint.
+
+vLLM's LoRA serving keeps multiple adapters resident in GPU memory simultaneously
+and batches across them at the token level, eliminating this serialization entirely.
+However, wiring vLLM into Mellea's intrinsic system is not a drop-in change: the
+intrinsic catalog, adapter loading, and `_generate_from_intrinsic` are all built
+around HF's PEFT API.
+
+**ROI: Medium, conditional.** vLLM multi-LoRA improves throughput (requests
+processed per second) but not per-request latency — the router → executor causal
+chain is irreducible. The investment is justified only if you have many concurrent
+benchmark clients saturating the server. A single BFCL run with sequential requests
+sees no benefit beyond what GPU hardware already provides. Additionally, vLLM
+requires all adapters served from one instance to share the same base model and the
+same LoRA rank. If adapters were trained with different ranks (common when different
+tasks need different capacity), they cannot be co-served.
+
+### 3. Multi-node pipelines with more LoRAs face batch fragmentation
+
+The current pipeline has 2 LoRA calls per request. Consider a 5-LoRA pipeline where
+each node routes requests to different downstream nodes. The problem is batch
+fragmentation: each routing node splits the incoming batch into subgroups by
+category. With N requests and K routing categories, subgroup sizes shrink at each
+hop. By node 3 or 4, the subgroups may be too small to amortize the overhead of a
+batched forward pass, and batching provides diminishing returns.
+
+The severity depends on topology:
+
+- **Linear chain** (A→B→C→D→E): fully serial, no fan-out, batching helps throughput
+  linearly but fragmentation is not a concern since all requests follow the same path.
+- **Routing fan-out** (A routes to one of B/C/D, then E): batch shrinks at A. If the
+  router sends 30%/50%/20% to three branches, each executor sees a smaller batch.
+  With N=100 requests, the smallest branch has ~20 requests — still useful. With
+  N=10, the smallest branch has ~2 requests — batching provides almost no benefit.
+- **Parallel independent branches** (A→{B,C}→D): B and C have no data dependency
+  and could run concurrently on separate GPU streams. This requires the scheduler to
+  know about independence, which the current imperative `run()` does not express.
+
+**ROI: Topology-dependent and hard to predict without profiling.** Batch
+fragmentation is a well-known problem in mixture-of-experts routing. The only way to
+know whether it matters for a specific pipeline is to measure subgroup size
+distributions under realistic request loads.
+
+### 4. LangGraph and LangChain do not solve the batching problem
+
+LangGraph supports parallel execution of independent nodes within a single graph
+invocation (superstep parallelism). If two nodes have no data dependency, they run
+concurrently within one request. This is useful for fan-out patterns such as calling
+three tools at once. It does not address request-level batching: each graph
+invocation is still one request, and there is no built-in mechanism to batch N
+requests through a shared model node. LangChain's `batch()` method batches
+independent calls to a single stateless model, not requests through a multi-node
+pipeline where nodes share model weights.
+
+**Conclusion: LangGraph solves intra-request parallelism. The problem here is
+inter-request batching across shared model state. These are different problems and
+LangGraph does not address the latter.**
+
+### 5. A topology-aware scheduler is the general solution but a significant investment
+
+To support batching generically across any pipeline topology, the pipeline would
+need to declare its computation as a DAG so a scheduler can derive synchronization
+points automatically and group requests into per-node batches. This is the
+architecture used by Ray Serve (deployment graph), NVIDIA Triton (ensemble
+pipelines), and Apache Beam (dataflow). The current `FunctionCallingPipeline.run()`
+is an imperative sequential function — changing it to a declared DAG is a non-trivial
+redesign.
+
+**ROI: Only justified once the pipeline topology stabilizes and throughput is a
+first-class requirement at scale.** For the current proof-of-concept and benchmark
+evaluation, GPU hardware (item 1) is the right investment. The scheduler question
+should be revisited if and when FCPipeline is promoted to a production Mellea
+component serving concurrent users.
 
 ---
 

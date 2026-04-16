@@ -29,9 +29,12 @@ from fc.lora import LocalIntrinsicAdapter, ensure_adapter
 from mellea.backends import ModelOption
 from mellea.backends.huggingface import LocalHFBackend
 from mellea.backends.tools import MelleaTool
+from mellea.core import FancyLogger
 from mellea.stdlib.components import Message
 from mellea.stdlib.components.intrinsic import Intrinsic
 from mellea.stdlib.context import ChatContext
+
+logger = FancyLogger.get_logger()
 
 # ---------------------------------------------------------------------------
 # Abstract base
@@ -190,7 +193,7 @@ class RouterNode(Node):
         router_ctx = self._build_ctx(
             ctx, self._backend, self._ADAPTER, tool_summary=tool_summary
         )
-        print(f"  [inference] Running {self._ADAPTER}...")
+        logger.debug("Running %s", self._ADAPTER)
         mot, _ = mfuncs.act(
             Intrinsic(self._ADAPTER),
             router_ctx,
@@ -200,7 +203,7 @@ class RouterNode(Node):
         )
         assert mot.is_computed()
         category = self._parse_category(mot.value or "")
-        print(f"  [inference] {self._ADAPTER} → {category}")
+        logger.debug("%s → %s", self._ADAPTER, category)
         return category
 
     @staticmethod
@@ -260,7 +263,7 @@ class ExecutorNode(Node):
             On parse failure, returns a conversational error message.
         """
         executor_ctx = self._build_ctx(ctx, self._backend, self._adapter_name)
-        print(f"  [inference] Running {self._adapter_name}...")
+        logger.debug("Running %s", self._adapter_name)
         mot, _ = mfuncs.act(
             Intrinsic(self._adapter_name),
             executor_ctx,
@@ -269,7 +272,7 @@ class ExecutorNode(Node):
             strategy=None,
         )
         assert mot.is_computed()
-        print(f"  [inference] {self._adapter_name} done")
+        logger.debug("%s done", self._adapter_name)
         return _parse_tool_calls(mot.value or "")
 
 
@@ -305,7 +308,7 @@ class ConversationalNode(Node):
                 {"role": "assistant", "content": "...", "tool_calls": None}
         """
         conv_ctx = self._build_ctx(ctx, self._backend, self._ADAPTER)
-        print(f"  [inference] Running {self._ADAPTER}...")
+        logger.debug("Running %s", self._ADAPTER)
         mot, _ = mfuncs.act(
             Intrinsic(self._ADAPTER),
             conv_ctx,
@@ -314,7 +317,7 @@ class ConversationalNode(Node):
             strategy=None,
         )
         assert mot.is_computed()
-        print(f"  [inference] {self._ADAPTER} done")
+        logger.debug("%s done", self._ADAPTER)
         raw = mot.value or ""
         try:
             content = json.loads(raw).get("response", raw)
