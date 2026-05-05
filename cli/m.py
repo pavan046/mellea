@@ -2,8 +2,9 @@
 
 Wires together all CLI sub-applications into a single Typer root command: ``m serve``
 (start a model-serving endpoint), ``m alora`` (train and upload LoRA/aLoRA adapters),
-``m decompose`` (LLM-driven task decomposition), and ``m eval`` (test-based model
-evaluation). Run ``m --help`` to see all available sub-commands.
+``m decompose`` (LLM-driven task decomposition), ``m eval`` (test-based model
+evaluation), and ``m memory`` (ingest and query external memory stores). Run
+``m --help`` to see all available sub-commands.
 """
 
 try:
@@ -18,6 +19,7 @@ from cli.alora.commands import alora_app
 from cli.decompose import app as decompose_app
 from cli.eval.commands import eval_app
 from cli.fix import fix_app
+from cli.memory import memory_app
 from cli.serve.commands import serve
 
 cli = typer.Typer(name="m", no_args_is_help=True)
@@ -54,3 +56,4 @@ cli.add_typer(decompose_app)
 
 cli.add_typer(eval_app)
 cli.add_typer(fix_app)
+cli.add_typer(memory_app)

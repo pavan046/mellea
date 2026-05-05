@@ -1,10 +1,15 @@
 """Standard-library memory components built on ``mellea.core.memory``.
 
-Re-exports the core memory contracts alongside the default concrete stores and
-policies shipped with mellea: ``InMemoryStore`` (reference implementation for
-tests and small scripts), ``DefaultRetrievalPolicy`` (top-k union across
-stores with trailing splice), and ``DefaultCompactionPolicy`` (summarize the
-oldest slice when the window budget is exceeded).
+Re-exports the core memory contracts alongside the default concrete stores,
+policies, and RAG-as-memory plumbing shipped with mellea:
+
+* ``InMemoryStore`` — dict-backed reference store (tests, small scripts).
+* ``VectorStore`` — dense-vector external memory for RAG.
+* ``chunk_text`` / ``Chunk`` — sentence-aware sliding-window chunker.
+* ``HashingEmbedder`` / ``SentenceTransformersEmbedder`` — embedding backends.
+* ``DefaultRetrievalPolicy`` / ``DefaultCompactionPolicy`` — baseline policies.
+* ``memory_block_to_document`` / ``memory_blocks_to_documents`` — citation glue
+  into the existing RAG intrinsics.
 
 Start here when you want memory without picking a vector DB or graph backend.
 """
@@ -12,6 +17,14 @@ Start here when you want memory without picking a vector DB or graph backend.
 from __future__ import annotations
 
 from ...core.memory import CompactionScope, MemoryRecord, MemoryStore
+from .chunker import Chunk, chunk_text
+from .citations import memory_block_to_document, memory_blocks_to_documents
+from .embedders import (
+    Embedder,
+    HashingEmbedder,
+    SentenceTransformersEmbedder,
+    cosine_similarity,
+)
 from .in_memory_store import InMemoryStore
 from .policies import (
     CompactionPolicy,
@@ -19,14 +32,24 @@ from .policies import (
     DefaultRetrievalPolicy,
     RetrievalPolicy,
 )
+from .vector_store import VectorStore
 
 __all__ = [
+    "Chunk",
     "CompactionPolicy",
     "CompactionScope",
     "DefaultCompactionPolicy",
     "DefaultRetrievalPolicy",
+    "Embedder",
+    "HashingEmbedder",
     "InMemoryStore",
     "MemoryRecord",
     "MemoryStore",
     "RetrievalPolicy",
+    "SentenceTransformersEmbedder",
+    "VectorStore",
+    "chunk_text",
+    "cosine_similarity",
+    "memory_block_to_document",
+    "memory_blocks_to_documents",
 ]
