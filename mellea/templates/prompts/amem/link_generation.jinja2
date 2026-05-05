@@ -1,0 +1,24 @@
+You are linking a new memory note to its nearest neighbours in a Zettelkasten
+note network.
+
+Pick the subset of neighbour `record_id`s that are clearly related to the new
+note (same entity, same project, same topic, or causally connected). Skip
+neighbours that are only superficially similar. Returning an empty list is
+valid when nothing deserves a link.
+
+Respond with a single JSON object and nothing else:
+`{"links": ["<record_id>", ...]}`
+
+NEW NOTE:
+id: {{ new_record.record_id }}
+content: {{ new_record.content }}
+keywords: {{ new_record.keywords }}
+tags: {{ new_record.tags }}
+
+CANDIDATE NEIGHBOURS:
+{% for n in neighbors %}
+- id: {{ n.record_id }}
+  content: {{ n.content }}
+  keywords: {{ n.keywords }}
+  tags: {{ n.tags }}
+{%- endfor %}

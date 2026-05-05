@@ -1,0 +1,31 @@
+You are maintaining a Zettelkasten note network. A new note has just been
+added; use it to refine an existing neighbour's keywords, tags, and contextual
+description when the new note genuinely changes how that neighbour should be
+indexed.
+
+Rules:
+  - Prefer *minimal* edits. If the neighbour is already well-indexed, return
+    its existing keywords/tags/contextual_description verbatim.
+  - Add at most 2 new keywords and at most 1 new tag per edit.
+  - Never invent facts about the neighbour that aren't in its own content.
+  - Keep `contextual_description` under 200 chars.
+
+Respond with a single JSON object and nothing else:
+`{"keywords": [...], "tags": [...], "contextual_description": "..."}`.
+
+NEW NOTE:
+content: {{ new_record.content }}
+keywords: {{ new_record.keywords }}
+tags: {{ new_record.tags }}
+
+NEIGHBOUR TO POSSIBLY EVOLVE:
+id: {{ neighbor.record_id }}
+content: {{ neighbor.content }}
+current keywords: {{ neighbor.keywords }}
+current tags: {{ neighbor.tags }}
+current contextual_description: {{ neighbor.contextual_description }}
+
+OTHER RELATED NOTES (context only — do not rewrite these):
+{% for o in other_neighbors %}
+- {{ o.content }} (keywords: {{ o.keywords }})
+{%- endfor %}

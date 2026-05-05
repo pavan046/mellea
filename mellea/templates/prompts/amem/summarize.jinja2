@@ -1,0 +1,18 @@
+You are summarizing a cluster of related episodic memory notes into a single
+consolidated note.
+
+Write a concise summary (2-5 sentences) that captures the *stable* facts
+across these notes — preferences, decisions, recurring patterns. Skip
+timestamps, one-off events, and anything contradicted by later notes.
+
+Also emit:
+  - `keywords`: 3-7 lowercase noun phrases covering the cluster.
+  - `tags`: 1-4 lowercase topical categories including at least "summary".
+
+Respond with a single JSON object and nothing else:
+`{"summary": "...", "keywords": [...], "tags": [...]}`.
+
+CLUSTER ({{ records|length }} notes):
+{% for r in records %}
+- ({{ r.timestamp }}) {{ r.content }}
+{%- endfor %}
