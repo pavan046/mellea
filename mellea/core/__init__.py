@@ -21,6 +21,8 @@ from .base import (
     GenerateLog,
     GenerateType,
     ImageBlock,
+    MemoryBlock,
+    MemorySource,
     ModelOutputThunk,
     ModelToolCall,
     S,
@@ -28,6 +30,7 @@ from .base import (
     blockify,
 )
 from .formatter import Formatter
+from .memory import CompactionScope, MemoryRecord, MemoryStore
 from .requirement import Requirement, ValidationResult, default_output_to_bool
 from .sampling import SamplingResult, SamplingStrategy
 from .utils import MelleaLogger, clear_log_context, log_context, set_log_context
@@ -52,6 +55,7 @@ __all__ = [
     "BaseModelSubclass",
     "C",
     "CBlock",
+    "CompactionScope",
     "Component",
     "ComponentParseError",
     "ComputedModelOutputThunk",
@@ -62,6 +66,10 @@ __all__ = [
     "GenerateType",
     "ImageBlock",
     "MelleaLogger",
+    "MemoryBlock",
+    "MemoryRecord",
+    "MemorySource",
+    "MemoryStore",
     "ModelOutputThunk",
     "ModelToolCall",
     "Requirement",

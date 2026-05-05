@@ -173,6 +173,102 @@ class ImageBlock(CBlock):
         return f"ImageBlock({self.value}, {self._meta.__repr__()})"
 
 
+class MemorySource(enum.Enum):
+    """Provenance tag for a ``MemoryBlock``.
+
+    Identifies which carrier of the memory quadruple (Zhang et al. arXiv:2509.18868)
+    produced the block's content, so downstream components (attribution, audit,
+    retrieval policies) can reason about it without re-inspecting the store.
+    """
+
+    EPISODIC = "episodic"
+    SEMANTIC = "semantic"
+    EXTERNAL_DOC = "external_doc"
+    GRAPH_FACT = "graph_fact"
+    SUMMARY = "summary"
+
+
+class MemoryBlock(CBlock):
+    """A ``CBlock`` that carries provenance pointing back to its source memory store.
+
+    Emitted when a ``MemoryStore`` materializes a record into the context window.
+    The block reads as a plain string to backends, but keeps enough metadata to
+    answer the attribution/faithfulness question: which record in which store
+    produced this text, and when was it retrieved.
+
+    Args:
+        value (str): The rendered textual content placed in the prompt.
+        source (MemorySource): Which memory carrier produced this block.
+        store_id (str): Identifier of the ``MemoryStore`` that emitted the block.
+        record_id (str): Stable id of the underlying record, enabling forget/supersede.
+        retrieved_at (datetime.datetime): Wall-clock time the record was read.
+        score (float | None): Optional retrieval score; higher is more relevant.
+        meta (dict[str, Any] | None): Additional metadata to merge into the block.
+    """
+
+    def __init__(
+        self,
+        value: str,
+        *,
+        source: MemorySource,
+        store_id: str,
+        record_id: str,
+        retrieved_at: datetime.datetime,
+        score: float | None = None,
+        meta: dict[str, Any] | None = None,
+    ):
+        """Initialize a MemoryBlock with provenance back to its source store."""
+        merged: dict[str, Any] = {
+            "memory_source": source.value,
+            "memory_store_id": store_id,
+            "memory_record_id": record_id,
+            "memory_retrieved_at": retrieved_at.isoformat(),
+        }
+        if score is not None:
+            merged["memory_score"] = score
+        if meta:
+            merged.update(meta)
+        super().__init__(value, merged)
+        self._source = source
+        self._store_id = store_id
+        self._record_id = record_id
+        self._retrieved_at = retrieved_at
+        self._score = score
+
+    @property
+    def source(self) -> MemorySource:
+        """The memory carrier that produced this block."""
+        return self._source
+
+    @property
+    def store_id(self) -> str:
+        """Identifier of the ``MemoryStore`` that emitted this block."""
+        return self._store_id
+
+    @property
+    def record_id(self) -> str:
+        """Stable record id inside the source store."""
+        return self._record_id
+
+    @property
+    def retrieved_at(self) -> datetime.datetime:
+        """Wall-clock time the underlying record was retrieved."""
+        return self._retrieved_at
+
+    @property
+    def score(self) -> float | None:
+        """Retrieval score assigned by the store, or ``None`` if unscored."""
+        return self._score
+
+    def __repr__(self) -> str:
+        """Provides a python-parsable representation surfacing provenance."""
+        return (
+            f"MemoryBlock({self.value!r}, source={self._source.value!r}, "
+            f"store_id={self._store_id!r}, record_id={self._record_id!r}, "
+            f"score={self._score!r})"
+        )
+
+
 S = typing_extensions.TypeVar("S", default=Any, covariant=True)
 """Used for class definitions for Component and ModelOutputThunk; also used for functions that don't accept CBlocks. Defaults to `Any`."""
 
