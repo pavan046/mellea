@@ -1,16 +1,20 @@
 """Concrete ``Context`` implementations for common conversation patterns.
 
 Provides ``ChatContext``, which accumulates all turns in a sliding-window chat history
-(configurable via ``window_size``), and ``SimpleContext``, in which each interaction
+(configurable via ``window_size``), ``SimpleContext``, in which each interaction
 is treated as a stateless single-turn exchange (no prior history is passed to the
-model). Import ``ChatContext`` for multi-turn conversations and ``SimpleContext`` when
-you want each call to the model to be independent.
+model), and ``MemoryContext``, a memory-aware ``ChatContext`` subclass that splices
+``MemoryBlock`` entries from attached ``MemoryStore`` instances on every
+``view_for_generation`` call. Import ``ChatContext`` for multi-turn conversations,
+``SimpleContext`` when you want each call to the model to be independent, and
+``MemoryContext`` when you need cross-session memory or RAG-as-memory.
 """
 
 from __future__ import annotations
 
 # Leave unused `ContextTurn` import for import ergonomics.
 from ..core import CBlock, Component, Context, ContextTurn
+from ..core.memory import MemoryStore
 
 
 class ChatContext(Context):
@@ -53,6 +57,90 @@ class ChatContext(Context):
             ``window_size`` turns, or ``None`` if the history is non-linear.
         """
         return self.as_list(self._window_size)
+
+
+class MemoryContext(ChatContext):
+    """A ``ChatContext`` that consults ``MemoryStore`` instances on every view.
+
+    On ``view_for_generation``, the context projects its linked-list history
+    exactly like ``ChatContext`` (respecting ``window_size``), then hands that
+    projection to a ``RetrievalPolicy`` which derives a query, fuses recall
+    across the attached stores, and splices the resulting ``MemoryBlock``
+    entries back in. If a ``CompactionPolicy`` is attached, it runs last and
+    folds the oldest slice into a ``SUMMARY`` block when the projection
+    exceeds ``turn_budget``.
+
+    The stores are kept on ``self._stores`` and propagated across ``add``
+    calls. They live *outside* the immutable linked list by design — stores
+    outlive any single context instance.
+
+    Args:
+        stores (list[MemoryStore]): Stores to consult on each view. May be empty.
+        retrieval_policy: Policy controlling query derivation, cross-store
+            fusion, and splicing position. Defaults to ``DefaultRetrievalPolicy``.
+        compaction_policy: Optional window-side compaction. Defaults to ``None``.
+        turn_budget (int | None): Max components in the projected view before
+            compaction is triggered. Ignored when ``compaction_policy`` is ``None``.
+        window_size (int | None): Forwarded to ``ChatContext``.
+    """
+
+    def __init__(
+        self,
+        *,
+        stores: list[MemoryStore] | None = None,
+        retrieval_policy=None,  # type: ignore[assignment]
+        compaction_policy=None,  # type: ignore[assignment]
+        turn_budget: int | None = None,
+        window_size: int | None = None,
+    ):
+        """Initialize MemoryContext with attached stores and policies."""
+        super().__init__(window_size=window_size)
+        from .memory.policies import DefaultRetrievalPolicy
+
+        self._stores: list[MemoryStore] = list(stores or [])
+        self._retrieval_policy = retrieval_policy or DefaultRetrievalPolicy()
+        self._compaction_policy = compaction_policy
+        self._turn_budget = turn_budget
+
+    @property
+    def stores(self) -> list[MemoryStore]:
+        """The stores consulted on every ``view_for_generation`` call."""
+        return list(self._stores)
+
+    def add(self, c: Component | CBlock) -> MemoryContext:
+        """Append ``c`` to the context, propagating stores and policies.
+
+        Args:
+            c (Component | CBlock): The component or content block to append.
+
+        Returns:
+            MemoryContext: A new ``MemoryContext`` sharing the same stores and
+            policies, with ``c`` appended to the history.
+        """
+        new = MemoryContext.from_previous(self, c)
+        new._window_size = self._window_size  # type: ignore[attr-defined]
+        new._stores = self._stores
+        new._retrieval_policy = self._retrieval_policy
+        new._compaction_policy = self._compaction_policy
+        new._turn_budget = self._turn_budget
+        return new
+
+    def view_for_generation(self) -> list[Component | CBlock] | None:
+        """Project history, splice recalled memory, then optionally compact."""
+        history = super().view_for_generation() or []
+        if self._stores:
+            query = self._retrieval_policy.derive_query(history)
+            recalled = self._retrieval_policy.retrieve(query, self._stores)
+            history = self._retrieval_policy.splice(history, recalled)
+
+        if (
+            self._compaction_policy is not None
+            and self._turn_budget is not None
+            and self._compaction_policy.should_compact(history, self._turn_budget)
+        ):
+            history = self._compaction_policy.compact(history)
+
+        return history
 
 
 class SimpleContext(Context):

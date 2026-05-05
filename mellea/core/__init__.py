@@ -22,6 +22,8 @@ from .base import (
     GenerateType,
     GenerationMetadata,
     ImageBlock,
+    MemoryBlock,
+    MemorySource,
     ModelOutputThunk,
     ModelToolCall,
     S,
@@ -29,6 +31,7 @@ from .base import (
     blockify,
 )
 from .formatter import Formatter
+from .memory import CompactionScope, MemoryRecord, MemoryStore
 from .requirement import (
     PartialValidationResult,
     Requirement,
@@ -58,6 +61,7 @@ __all__ = [
     "BaseModelSubclass",
     "C",
     "CBlock",
+    "CompactionScope",
     "Component",
     "ComponentParseError",
     "ComputedModelOutputThunk",
@@ -69,6 +73,10 @@ __all__ = [
     "GenerationMetadata",
     "ImageBlock",
     "MelleaLogger",
+    "MemoryBlock",
+    "MemoryRecord",
+    "MemorySource",
+    "MemoryStore",
     "ModelOutputThunk",
     "ModelToolCall",
     "PartialValidationResult",

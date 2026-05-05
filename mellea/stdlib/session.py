@@ -31,9 +31,13 @@ from ..core import (
     Component,
     ComputedModelOutputThunk,
     Context,
+    ContextTurn,
     GenerateLog,
     ImageBlock,
     MelleaLogger,
+    MemoryBlock,
+    MemoryRecord,
+    MemoryStore,
     ModelOutputThunk,
     Requirement,
     S,
@@ -386,6 +390,128 @@ class MelleaSession:
 
             deregister_session_plugins(self.id)
 
+    # ---- memory verbs ----
+
+    def _attached_stores(self) -> list[MemoryStore]:
+        """Return the MemoryStores attached to the active context, or ``[]``."""
+        return list(getattr(self.ctx, "_stores", []) or [])
+
+    def _fire_after_turn_write(self, actor: str = "user") -> None:
+        """Call ``write()`` on every attached store with ``write_on_turn=True``.
+
+        Invoked from the turn-commit helper. Stores with ``write_on_turn=False``
+        are skipped; callers with custom ingestion pipelines can drive those
+        explicitly via ``remember()`` or by calling ``store.write`` directly.
+        """
+        stores = [s for s in self._attached_stores() if s.write_on_turn]
+        if not stores:
+            return
+        turn = self.ctx.last_turn()
+        if turn is None or (turn.model_input is None and turn.output is None):
+            return
+        for store in stores:
+            try:
+                store.write(turn, actor=actor)
+            except Exception as e:  # pragma: no cover - telemetry path
+                self._session_logger.warning(
+                    "memory store %s failed to write turn: %s", store.store_id, e
+                )
+
+    def _commit_turn(self, new_ctx: Context) -> None:
+        """Advance ``self.ctx`` to ``new_ctx`` and fire the after-turn hook."""
+        self.ctx = new_ctx
+        self._fire_after_turn_write()
+
+    def remember(
+        self,
+        fact: str,
+        *,
+        actor: str = "agent",
+        store_id: str | None = None,
+        tags: dict[str, Any] | None = None,
+    ) -> list[MemoryRecord]:
+        """Write a fact to memory without going through a generation turn.
+
+        Thin sugar over ``MemoryStore.write``. Useful for agent-authored memory
+        (cf. Mem0 v3's "agent-generated facts are first-class" insight). The
+        fact is wrapped in a synthetic ``ContextTurn`` whose ``model_input`` is
+        a ``CBlock(fact)``.
+
+        Args:
+            fact (str): The fact to persist.
+            actor (str): Who is authoring this fact.
+            store_id (str | None): Target a specific store by id. ``None``
+                writes to every attached store.
+            tags (dict[str, Any] | None): Tagging metadata forwarded to write().
+
+        Returns:
+            list[MemoryRecord]: All records produced across the targeted stores.
+        """
+        stores = self._attached_stores()
+        if store_id is not None:
+            stores = [s for s in stores if s.store_id == store_id]
+        if not stores:
+            raise RuntimeError(
+                "No MemoryStore attached to this session's context; "
+                "construct the session with a MemoryContext to enable memory."
+            )
+        turn = ContextTurn(model_input=CBlock(fact), output=None)
+        produced: list[MemoryRecord] = []
+        for store in stores:
+            produced.extend(store.write(turn, actor=actor, tags=tags))
+        return produced
+
+    def recall(
+        self,
+        query: str,
+        *,
+        k: int = 5,
+        store_id: str | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> list[MemoryBlock]:
+        """Retrieve from memory without running a generation turn.
+
+        Args:
+            query (str): The retrieval query.
+            k (int): Per-store cap.
+            store_id (str | None): Target a specific store by id.
+            filters (dict[str, Any] | None): Forwarded to every retrieve() call.
+
+        Returns:
+            list[MemoryBlock]: Fused, unranked across stores (caller sorts).
+        """
+        stores = self._attached_stores()
+        if store_id is not None:
+            stores = [s for s in stores if s.store_id == store_id]
+        hits: list[MemoryBlock] = []
+        for store in stores:
+            hits.extend(store.retrieve(query, k=k, filters=filters))
+        return hits
+
+    def forget(
+        self,
+        record_id: str,
+        *,
+        reason: str = "user_request",
+        store_id: str | None = None,
+    ) -> None:
+        """Inhibit a record across attached stores.
+
+        If ``store_id`` is omitted, every attached store is asked to forget
+        the id. Stores that don't hold the id are silently no-ops — the
+        audit log tracks which store actually had it.
+
+        Args:
+            record_id (str): Target record.
+            reason (str): Justification, written to the store's audit log.
+            store_id (str | None): Restrict to one store by id.
+        """
+        stores = self._attached_stores()
+        if store_id is not None:
+            stores = [s for s in stores if s.store_id == store_id]
+        for store in stores:
+            store.forget(record_id, reason=reason)
+
     @overload
     def act(
         self,
@@ -450,11 +576,11 @@ class MelleaSession:
         )  # type: ignore
 
         if isinstance(r, SamplingResult):
-            self.ctx = r.result_ctx
+            self._commit_turn(r.result_ctx)
             return r
         else:
             result, context = r
-            self.ctx = context
+            self._commit_turn(context)
             return result
 
     @overload
@@ -552,12 +678,12 @@ class MelleaSession:
         )
 
         if isinstance(r, SamplingResult):
-            self.ctx = r.result_ctx
+            self._commit_turn(r.result_ctx)
             return r
         else:
             # It's a tuple[ModelOutputThunk, Context].
             result, context = r
-            self.ctx = context
+            self._commit_turn(context)
             return result
 
     def chat(
@@ -601,7 +727,7 @@ class MelleaSession:
             tool_calls=tool_calls,
         )
 
-        self.ctx = context
+        self._commit_turn(context)
         return result
 
     def validate(
@@ -668,7 +794,7 @@ class MelleaSession:
             model_options=model_options,
             tool_calls=tool_calls,
         )
-        self.ctx = context
+        self._commit_turn(context)
         return result
 
     def transform(
@@ -700,7 +826,7 @@ class MelleaSession:
             format=format,
             model_options=model_options,
         )
-        self.ctx = context
+        self._commit_turn(context)
         return result
 
     @overload
@@ -801,11 +927,11 @@ class MelleaSession:
         )  # type: ignore
 
         if isinstance(r, SamplingResult):
-            self.ctx = r.result_ctx
+            self._commit_turn(r.result_ctx)
             return r
         else:
             result, context = r
-            self.ctx = context
+            self._commit_turn(context)
             return result
 
     @overload
@@ -949,12 +1075,12 @@ class MelleaSession:
         )
 
         if isinstance(r, SamplingResult):
-            self.ctx = r.result_ctx
+            self._commit_turn(r.result_ctx)
             return r
         else:
             # It's a tuple[ModelOutputThunk, Context].
             result, context = r
-            self.ctx = context
+            self._commit_turn(context)
             return result
 
     async def achat(
@@ -998,7 +1124,7 @@ class MelleaSession:
             tool_calls=tool_calls,
         )
 
-        self.ctx = context
+        self._commit_turn(context)
         return result
 
     async def avalidate(
@@ -1092,7 +1218,7 @@ class MelleaSession:
             tool_calls=tool_calls,
             await_result=await_result,  # type: ignore[call-overload]
         )
-        self.ctx = context
+        self._commit_turn(context)
         return result
 
     async def atransform(
@@ -1124,7 +1250,7 @@ class MelleaSession:
             format=format,
             model_options=model_options,
         )
-        self.ctx = context
+        self._commit_turn(context)
         return result
 
     @classmethod
