@@ -42,6 +42,7 @@ from .policies import (
     DefaultCompactionPolicy,
     DefaultRetrievalPolicy,
     RetrievalPolicy,
+    Summarizer,
 )
 from .vector_store import VectorStore
 
@@ -60,6 +61,7 @@ __all__ = [
     "MemoryStore",
     "RetrievalPolicy",
     "SentenceTransformersEmbedder",
+    "Summarizer",
     "VectorStore",
     "chunk_text",
     "cosine_similarity",

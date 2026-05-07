@@ -18,7 +18,6 @@ class _StubBackend:
     """Minimal stand-in for Backend; memory tests never call generate()."""
 
 
-
 # ---------------------------------------------------------------------------
 # MemoryContext
 # ---------------------------------------------------------------------------
@@ -60,15 +59,23 @@ def test_memory_context_no_stores_no_splice() -> None:
 
 
 def test_memory_context_compaction_triggered_over_budget() -> None:
+    store = InMemoryStore("compaction-sink")
     ctx = MemoryContext(
-        compaction_policy=DefaultCompactionPolicy(fold_fraction=0.5), turn_budget=3
+        compaction_policy=DefaultCompactionPolicy(
+            summarizer=lambda text: f"SUMMARY: {text.splitlines()[0]}",
+            store=store,
+            fold_fraction=0.5,
+        ),
+        turn_budget=3,
     )
     for i in range(5):
         ctx = ctx.add(CBlock(f"turn {i}"))
     view = ctx.view_for_generation()
-    # Expect at least one summary block at the head.
+    # Expect a SUMMARY block at the head whose record_id resolves in the store.
     assert isinstance(view[0], MemoryBlock)
-    assert view[0].value.startswith("Summary of prior turns")
+    assert view[0].store_id == "compaction-sink"
+    assert store.get(view[0].record_id) is not None
+    assert view[0].value.startswith("SUMMARY:")
 
 
 # ---------------------------------------------------------------------------

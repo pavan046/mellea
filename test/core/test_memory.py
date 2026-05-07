@@ -304,17 +304,35 @@ def test_default_retrieval_policy_fuses_across_stores() -> None:
 
 
 def test_default_compaction_policy_folds_oldest() -> None:
-    policy = DefaultCompactionPolicy(fold_fraction=0.5)
+    store = InMemoryStore("compaction-test")
+    policy = DefaultCompactionPolicy(
+        summarizer=lambda text: f"SUMMARY[{len(text)}]", store=store, fold_fraction=0.5
+    )
     history = [CBlock(f"turn {i}") for i in range(4)]
     assert policy.should_compact(history, budget=3)
     folded = policy.compact(history)
     assert isinstance(folded[0], MemoryBlock)
     assert folded[0].source is MemorySource.SUMMARY
+    assert folded[0].store_id == "compaction-test"
+    assert store.get(folded[0].record_id) is not None
     assert folded[0]._meta["folded_count"] == 2
     assert len(folded) == 3  # one summary + remaining tail
 
 
 def test_default_compaction_policy_under_budget_noop() -> None:
-    policy = DefaultCompactionPolicy()
+    policy = DefaultCompactionPolicy(
+        summarizer=lambda _text: "unused", store=InMemoryStore("compaction-test")
+    )
     history = [CBlock("only")]
     assert not policy.should_compact(history, budget=5)
+
+
+def test_default_compaction_policy_empty_summary_preserves_history() -> None:
+    store = InMemoryStore("compaction-test")
+    policy = DefaultCompactionPolicy(
+        summarizer=lambda _text: "", store=store, fold_fraction=0.5
+    )
+    history = [CBlock(f"turn {i}") for i in range(4)]
+    folded = policy.compact(history)
+    assert folded == history
+    assert store.all_records() == []
